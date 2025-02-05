@@ -1,0 +1,17 @@
+{
+  "name": "project-hibernation",
+  "version-string": "1.0.0",
+  "dependencies": [
+    "opengl",
+    "glew",
+    "glfw3",
+    "glm",
+    {
+      "name": "imgui",
+      "features": [
+        "opengl3-binding",
+        "glfw-binding"
+      ]
+    }
+  ]
+}
