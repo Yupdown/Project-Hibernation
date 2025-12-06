@@ -83,6 +83,12 @@ public:
 	uint32_t m_windowWidth = WIDTH;
 	uint32_t m_windowHeight = HEIGHT;
 
+	bool m_windowFullscreen = false;
+	int m_windowPosX = 0;
+	int m_windowPosY = 0;
+	int m_windowedWidth = WIDTH;
+	int m_windowedHeight = HEIGHT;
+
 	// Frame time histogram data
 	static constexpr size_t FRAME_HISTORY_SIZE = 100;
 	static constexpr double GRAPH_UPDATE_INTERVAL = 1.0 / 120.0;  // 60 FPS interval
@@ -127,10 +133,15 @@ public:
 		}
 
 		glfwSetWindowUserPointer(m_window, this);
+		glfwSetKeyCallback(m_window,
+			[](GLFWwindow* window, int key, int scancode, int action, int mods) {
+				reinterpret_cast<decltype(this)>(glfwGetWindowUserPointer(window))->handleKey(window, key, scancode, action, mods);
+			});
 		glfwSetFramebufferSizeCallback(m_window,
 			[](GLFWwindow* window, int width, int height) {
 				reinterpret_cast<decltype(this)>(glfwGetWindowUserPointer(window))->handleFramebufferResize(window, width, height);
 			});
+		
 
 		std::cout << "> Window Creation" << std::endl;
 	}
@@ -323,6 +334,13 @@ public:
 		createSwapChain(m_vkbDevice);
 		createImageViews();
 		createFramebuffers();
+	}
+
+	void handleKey(GLFWwindow* window, int key, int scancode, int action, int mods) {
+		// Toggle fullscreen on Alt + Enter
+		if (key == GLFW_KEY_ENTER && action == GLFW_PRESS && (mods & GLFW_MOD_ALT)) {
+			toggleFullscreen(window, !m_windowFullscreen);
+		}
 	}
 
 	void initImGUI() {
@@ -1029,6 +1047,34 @@ public:
 		}
 
 		m_frameAxisLimit = std::lerp(m_frameAxisLimit, m_maxFrameTime * 1.2f, m_currentFrameTime * 16.0f);
+	}
+
+	void toggleFullscreen(GLFWwindow* window, bool fullScreen) {
+		if (m_windowFullscreen == fullScreen) {
+			return;
+		}
+
+		m_windowFullscreen = fullScreen;
+		GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+		const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+
+		if (fullScreen) {
+			// [Windowed -> Borderless Fullscreen]
+			std::cout << "> Switching to Borderless Fullscreen" << std::endl;
+
+			glfwGetWindowPos(window, &m_windowPosX, &m_windowPosY);
+			glfwGetWindowSize(window, &m_windowedWidth, &m_windowedHeight);
+
+			glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_FALSE);
+			glfwSetWindowMonitor(window, nullptr, 0, 0, mode->width, mode->height, mode->refreshRate);
+		}
+		else {
+			// [Borderless Fullscreen -> Windowed]
+			std::cout << "> Switching to Windowed Mode" << std::endl;
+
+			glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_TRUE);
+			glfwSetWindowMonitor(window, nullptr, m_windowPosX, m_windowPosY, m_windowedWidth, m_windowedHeight, 0);
+		}
 	}
 
 	void cleanup() {
