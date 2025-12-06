@@ -36,19 +36,6 @@
 #include <utility>
 #include <vector>
 
-// Windows Library
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-
-#include <windows.h>
-#include <wrl.h>
-#include <shellapi.h>
-#include <shlwapi.h>
-#include <comdef.h>
-#include <commdlg.h>
-#include <wincodec.h>
-#include <wincodecsdk.h>
-
 // Vulkan Library
 #define VK_NO_PROTOTYPES
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
