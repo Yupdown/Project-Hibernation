@@ -74,7 +74,9 @@ private:
 	// Synchronization
 	std::vector<vk::UniqueSemaphore> m_imageAvailableSemaphores;
 	std::vector<vk::UniqueSemaphore> m_renderFinishedSemaphores;
-	std::vector<vk::UniqueFence> m_inFlightFences;
+	vk::UniqueSemaphore m_timelineSemaphore;
+	uint64_t m_timelineValue = 0;
+	std::vector<uint64_t> m_frameTimelineValues;
 
 	// Queues
 	vk::Queue m_graphicsQueue;

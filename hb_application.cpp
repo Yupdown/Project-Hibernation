@@ -100,6 +100,7 @@ void HBApplication::initVulkan() {
 	vkb::InstanceBuilder builder;
 	auto instanceRet = builder.set_app_name("Project Hibernation")
 		.request_validation_layers(g_enableValidationLayers)
+		.require_api_version(1, 2, 0)
 		.use_default_debug_messenger()
 		.build();
 
@@ -157,9 +158,13 @@ void HBApplication::initVulkan() {
 	vkb::PhysicalDevice vkb_physicalDevice = physRet.value().front();
 	logDeviceInfo(vkb_physicalDevice.physical_device);
 
+	VkPhysicalDeviceVulkan12Features features12 = {};
+	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	features12.timelineSemaphore = VK_TRUE;
+
 	// 4. Logical Device Creation using vk-bootstrap
 	vkb::DeviceBuilder deviceBuilder{ vkb_physicalDevice };
-	auto devRet = deviceBuilder.build();
+	auto devRet = deviceBuilder.add_pNext(&features12).build();
 
 	if (!devRet) {
 		throw std::runtime_error("Failed to create logical device: " + devRet.error().message());
@@ -684,6 +689,7 @@ void HBApplication::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32
 	ImGui::Text("Frame Time: %.3f ms", m_currentFrameTime * 1000.0f);
 	ImGui::Text("Min: %.3f ms | Max: %.3f ms | Avg: %.3f ms",
 		m_minFrameTime, m_maxFrameTime, m_avgFrameTime);
+	ImGui::Text("Timeline Value: %llu", m_timelineValue);
 
 	ImGui::Separator();
 
@@ -744,7 +750,6 @@ void HBApplication::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32
 	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 
 	commandBuffer.endRenderPass();
-
 	commandBuffer.end();
 }
 
@@ -777,29 +782,30 @@ void HBApplication::createDescriptorPool() {
 }
 
 void HBApplication::createSyncObjects() {
-	m_inFlightFences.clear();
 	m_imageAvailableSemaphores.clear();
 	m_renderFinishedSemaphores.clear();
+	m_frameTimelineValues.clear();
 
-	m_inFlightFences.reserve(NumFramesInFlight);
 	m_imageAvailableSemaphores.reserve(NumFramesInFlight);
 	m_renderFinishedSemaphores.reserve(NumFramesInFlight);
+	m_frameTimelineValues.resize(NumFramesInFlight, 0);
 
 	vk::SemaphoreCreateInfo semaphoreInfo = {};
-	semaphoreInfo.sType = vk::StructureType::eSemaphoreCreateInfo;
-	semaphoreInfo.pNext = nullptr;
-	semaphoreInfo.flags = {};
-
-	vk::FenceCreateInfo fenceInfo = {};
-	fenceInfo.sType = vk::StructureType::eFenceCreateInfo;
-	fenceInfo.pNext = nullptr;
-	fenceInfo.flags = vk::FenceCreateFlagBits::eSignaled;
 
 	for (size_t i = 0; i < NumFramesInFlight; ++i) {
-		m_inFlightFences.emplace_back(m_device->createFenceUnique(fenceInfo));
 		m_imageAvailableSemaphores.emplace_back(m_device->createSemaphoreUnique(semaphoreInfo));
 		m_renderFinishedSemaphores.emplace_back(m_device->createSemaphoreUnique(semaphoreInfo));
 	}
+
+	vk::SemaphoreTypeCreateInfo timelineCreateInfo;
+	timelineCreateInfo.semaphoreType = vk::SemaphoreType::eTimeline;
+	timelineCreateInfo.initialValue = 0;
+
+	vk::SemaphoreCreateInfo timelineSemaphoreInfo;
+	timelineSemaphoreInfo.pNext = &timelineCreateInfo;
+	
+	m_timelineSemaphore = m_device->createSemaphoreUnique(timelineSemaphoreInfo);
+	m_timelineValue = 0;
 }
 
 bool HBApplication::acquireNextFrame() {
@@ -811,8 +817,15 @@ bool HBApplication::acquireNextFrame() {
 
 	m_currentFrameIndex = (m_currentFrameIndex + 1) % NumFramesInFlight;
 
-	auto result = m_device->waitForFences({ *m_inFlightFences[m_currentFrameIndex] }, VK_TRUE, UINT64_MAX);
-	m_device->resetFences({ *m_inFlightFences[m_currentFrameIndex] });
+	if (m_frameTimelineValues[m_currentFrameIndex] > 0) {
+		vk::SemaphoreWaitInfo waitInfo;
+		waitInfo.semaphoreCount = 1;
+		vk::Semaphore timelineSem = *m_timelineSemaphore;
+		waitInfo.pSemaphores = &timelineSem;
+		waitInfo.pValues = &m_frameTimelineValues[m_currentFrameIndex];
+		
+		auto result = m_device->waitSemaphores(waitInfo, UINT64_MAX);
+	}
 
 	auto acquireResult = m_device->acquireNextImageKHR(*m_swapChain, UINT64_MAX, *m_imageAvailableSemaphores[m_currentFrameIndex], nullptr);
 	vk::Result res = acquireResult.result;
@@ -845,11 +858,24 @@ void HBApplication::render() {
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &(*m_commandBuffers[m_currentFrameIndex]);
 
-	vk::Semaphore signalSemaphores[] = { *m_renderFinishedSemaphores[m_currentFrameIndex] };
-	submitInfo.signalSemaphoreCount = 1;
+	m_timelineValue++;
+	m_frameTimelineValues[m_currentFrameIndex] = m_timelineValue;
+
+	vk::Semaphore signalSemaphores[] = { *m_renderFinishedSemaphores[m_currentFrameIndex], *m_timelineSemaphore };
+	uint64_t waitValues[] = { 0 };
+	uint64_t signalValues[] = { 0, m_timelineValue };
+
+	vk::TimelineSemaphoreSubmitInfo timelineInfo;
+	timelineInfo.waitSemaphoreValueCount = 1;
+	timelineInfo.pWaitSemaphoreValues = waitValues;
+	timelineInfo.signalSemaphoreValueCount = 2;
+	timelineInfo.pSignalSemaphoreValues = signalValues;
+
+	submitInfo.pNext = &timelineInfo;
+	submitInfo.signalSemaphoreCount = 2;
 	submitInfo.pSignalSemaphores = signalSemaphores;
 
-	m_graphicsQueue.submit(submitInfo, *m_inFlightFences[m_currentFrameIndex]);
+	m_graphicsQueue.submit(submitInfo, nullptr);
 
 	vk::PresentInfoKHR presentInfo = {};
 	presentInfo.sType = vk::StructureType::ePresentInfoKHR;
