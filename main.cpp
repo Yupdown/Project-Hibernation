@@ -84,6 +84,8 @@ public:
 	uint32_t m_windowHeight = HEIGHT;
 
 	bool m_windowFullscreen = false;
+	bool m_vsync = false;
+	bool m_recreateSwapchain = false;
 	int m_windowPosX = 0;
 	int m_windowPosY = 0;
 	int m_windowedWidth = WIDTH;
@@ -321,6 +323,13 @@ public:
 		createSyncObjects();
 	}
 
+	void recreateSwapChain() {
+		m_device->waitIdle();
+		createSwapChain(m_vkbDevice);
+		createImageViews();
+		createFramebuffers();
+	}
+
 	void handleFramebufferResize(GLFWwindow* window, int width, int height) {
 		m_windowWidth = width;
 		m_windowHeight = height;
@@ -329,11 +338,7 @@ public:
 			return;
 		}
 
-		m_device->waitIdle();
-
-		createSwapChain(m_vkbDevice);
-		createImageViews();
-		createFramebuffers();
+		m_recreateSwapchain = true;
 	}
 
 	void handleKey(GLFWwindow* window, int key, int scancode, int action, int mods) {
@@ -390,18 +395,20 @@ public:
 
 	void createSwapChain(vkb::Device& vkb_dev) {
 		vkb::SwapchainBuilder swapchainBuilder(vkb_dev);
+		VkPresentModeKHR presentMode = m_vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
+
 		auto swapRet = swapchainBuilder.set_old_swapchain(*m_swapChain)
 			.set_desired_extent(m_windowWidth, m_windowHeight)
 			.set_desired_format({ VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
-			.set_desired_present_mode(VK_PRESENT_MODE_MAILBOX_KHR)
+			.set_desired_present_mode(presentMode)
 			.set_clipped(true)
 			.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
 			.set_required_min_image_count(NumFramesInFlight)
 			.build();
 
 		if (!swapRet) {
-			// Fallback to FIFO present mode if MAILBOX is not available
-			std::cout << "MAILBOX present mode not available, falling back to FIFO." << std::endl;
+			// Fallback to FIFO present mode if requested mode is not available
+			std::cout << "Requested present mode not available, falling back to FIFO." << std::endl;
 			swapchainBuilder.set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR);
 			swapRet = swapchainBuilder.build();
 			if (!swapRet) {
@@ -770,6 +777,10 @@ public:
 		// Frame Statistics Window
 		ImGui::Begin("Frame Statistics", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 		
+		if (ImGui::Checkbox("VSync", &m_vsync)) {
+			m_recreateSwapchain = true;
+		}
+
 		ImGui::Text("FPS: %.1f", m_fps);
 		ImGui::Text("Frame Time: %.3f ms", m_currentFrameTime * 1000.0f);
 		ImGui::Text("Min: %.3f ms | Max: %.3f ms | Avg: %.3f ms", 
@@ -968,6 +979,12 @@ public:
 
 		while (!glfwWindowShouldClose(m_window)) {
 			glfwPollEvents();
+
+			if (m_recreateSwapchain) {
+				recreateSwapChain();
+				m_recreateSwapchain = false;
+			}
+
 			if (acquireNextFrame()) {
 				render();
 				updateFrameStats();
