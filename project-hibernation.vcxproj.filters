@@ -32,6 +32,9 @@
     <ClCompile Include="imgui\imgui_impl_vulkan.cpp">
       <Filter>ImGUI Impl Sources</Filter>
     </ClCompile>
+    <ClCompile Include="hb_application.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stdafx.h">
@@ -43,6 +46,7 @@
     <ClInclude Include="imgui\imgui_impl_vulkan.h">
       <Filter>ImGUI Impl Sources</Filter>
     </ClInclude>
+    <ClInclude Include="hb_application.h" />
   </ItemGroup>
   <ItemGroup>
     <VulkanGLSLShader Include="shaders\shader.frag">
