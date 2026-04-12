@@ -239,8 +239,6 @@ void HBApplication::recreateSwapChain() {
 	
 	createSwapChain(m_vkbDevice);
 	createImageViews();
-	createRenderPass();
-	createGraphicsPipeline();
 	createFramebuffers();
 	createOffscreenResources();
 }
@@ -310,7 +308,7 @@ void HBApplication::initImGUI() {
 
 void HBApplication::createSwapChain(vkb::Device& vkb_dev) {
 	vkb::SwapchainBuilder swapchainBuilder(vkb_dev);
-	VkPresentModeKHR presentMode = m_vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
+	VkPresentModeKHR presentMode = m_vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_MAILBOX_KHR;
 
 	auto swapRet = swapchainBuilder.set_old_swapchain(*m_swapChain)
 		.set_desired_extent(m_windowWidth, m_windowHeight)
