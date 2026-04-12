@@ -20,11 +20,13 @@ public:
 	void createRenderPass();
 	void createGraphicsPipeline();
 	void createFramebuffers();
+	void createOffscreenResources();
 	void createCommandPool(vkb::Device& vkb_dev);
 	void createCommandBuffers();
 	void recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32_t imageIndex);
 	void createDescriptorPool();
 	void createSyncObjects();
+	uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
 	bool acquireNextFrame();
 	void render();
 	void mainLoop();
@@ -61,11 +63,19 @@ private:
 
 	// Pipeline
 	vk::UniqueRenderPass m_renderPass;
+	vk::UniqueRenderPass m_offscreenRenderPass;
 	vk::UniquePipelineLayout m_pipelineLayout;
 	vk::UniquePipeline m_graphicsPipeline;
 
 	// Framebuffers
 	std::vector<vk::UniqueFramebuffer> m_swapChainFramebuffers;
+	vk::UniqueFramebuffer m_offscreenFramebuffer;
+
+	// Offscreen Target
+	vk::UniqueImage m_offscreenImage;
+	vk::UniqueDeviceMemory m_offscreenImageMemory;
+	vk::UniqueImageView m_offscreenImageView;
+	vk::Format m_offscreenFormat = vk::Format::eB8G8R8A8Unorm;
 
 	// Command
 	vk::UniqueCommandPool m_commandPool;

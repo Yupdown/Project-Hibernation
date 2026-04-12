@@ -221,6 +221,7 @@ void HBApplication::initVulkan() {
 	createRenderPass();
 	createGraphicsPipeline();
 	createFramebuffers();
+	createOffscreenResources();
 	createCommandPool(m_vkbDevice);
 	createCommandBuffers();
 	createDescriptorPool();
@@ -229,9 +230,19 @@ void HBApplication::initVulkan() {
 
 void HBApplication::recreateSwapChain() {
 	m_device->waitIdle();
+	
+	m_offscreenFramebuffer.reset();
+	m_offscreenRenderPass.reset();
+	m_offscreenImageView.reset();
+	m_offscreenImage.reset();
+	m_offscreenImageMemory.reset();
+	
 	createSwapChain(m_vkbDevice);
 	createImageViews();
+	createRenderPass();
+	createGraphicsPipeline();
 	createFramebuffers();
+	createOffscreenResources();
 }
 
 void HBApplication::handleFramebufferResize(GLFWwindow* window, int width, int height) {
@@ -370,11 +381,11 @@ void HBApplication::createRenderPass() {
 	colorAttachment.flags = {};
 	colorAttachment.format = m_swapChainImageFormat;
 	colorAttachment.samples = vk::SampleCountFlagBits::e1;
-	colorAttachment.loadOp = vk::AttachmentLoadOp::eClear;
+	colorAttachment.loadOp = vk::AttachmentLoadOp::eLoad; // Change to eLoad
 	colorAttachment.storeOp = vk::AttachmentStoreOp::eStore;
 	colorAttachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
 	colorAttachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-	colorAttachment.initialLayout = vk::ImageLayout::eUndefined;
+	colorAttachment.initialLayout = vk::ImageLayout::eColorAttachmentOptimal; // Change to eColorAttachmentOptimal
 	colorAttachment.finalLayout = vk::ImageLayout::ePresentSrcKHR;
 
 	vk::AttachmentReference colorAttachmentRef = {};
@@ -587,6 +598,113 @@ void HBApplication::createGraphicsPipeline() {
 	m_graphicsPipeline = m_device->createGraphicsPipelineUnique(nullptr, pipelineInfo).value;
 }
 
+uint32_t HBApplication::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
+	vk::PhysicalDeviceMemoryProperties memProperties = m_physicalDevice.getMemoryProperties();
+
+	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+		if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+			return i;
+		}
+	}
+
+	throw std::runtime_error("failed to find suitable memory type!");
+}
+
+void HBApplication::createOffscreenResources() {
+	uint32_t width = std::max(1u, m_swapChainExtent.width / 10);
+	uint32_t height = std::max(1u, m_swapChainExtent.height / 10);
+
+	// Create Offscreen Image
+	vk::ImageCreateInfo imageInfo = {};
+	imageInfo.imageType = vk::ImageType::e2D;
+	imageInfo.extent = vk::Extent3D{ width, height, 1 };
+	imageInfo.mipLevels = 1;
+	imageInfo.arrayLayers = 1;
+	imageInfo.format = m_offscreenFormat;
+	imageInfo.tiling = vk::ImageTiling::eOptimal;
+	imageInfo.initialLayout = vk::ImageLayout::eUndefined;
+	imageInfo.usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc;
+	imageInfo.samples = vk::SampleCountFlagBits::e1;
+	imageInfo.sharingMode = vk::SharingMode::eExclusive;
+
+	m_offscreenImage = m_device->createImageUnique(imageInfo);
+
+	// Allocate Memory
+	vk::MemoryRequirements memRequirements = m_device->getImageMemoryRequirements(*m_offscreenImage);
+
+	vk::MemoryAllocateInfo allocInfo = {};
+	allocInfo.allocationSize = memRequirements.size;
+	allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+	m_offscreenImageMemory = m_device->allocateMemoryUnique(allocInfo);
+	m_device->bindImageMemory(*m_offscreenImage, *m_offscreenImageMemory, 0);
+
+	// Create Image View
+	vk::ImageViewCreateInfo viewInfo = {};
+	viewInfo.image = *m_offscreenImage;
+	viewInfo.viewType = vk::ImageViewType::e2D;
+	viewInfo.format = m_offscreenFormat;
+	viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+	viewInfo.subresourceRange.baseMipLevel = 0;
+	viewInfo.subresourceRange.levelCount = 1;
+	viewInfo.subresourceRange.baseArrayLayer = 0;
+	viewInfo.subresourceRange.layerCount = 1;
+
+	m_offscreenImageView = m_device->createImageViewUnique(viewInfo);
+
+	// Create Offscreen Render Pass
+	vk::AttachmentDescription colorAttachment = {};
+	colorAttachment.format = m_offscreenFormat;
+	colorAttachment.samples = vk::SampleCountFlagBits::e1;
+	colorAttachment.loadOp = vk::AttachmentLoadOp::eClear;
+	colorAttachment.storeOp = vk::AttachmentStoreOp::eStore;
+	colorAttachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+	colorAttachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+	colorAttachment.initialLayout = vk::ImageLayout::eUndefined;
+	colorAttachment.finalLayout = vk::ImageLayout::eTransferSrcOptimal;
+
+	vk::AttachmentReference colorAttachmentRef = {};
+	colorAttachmentRef.attachment = 0;
+	colorAttachmentRef.layout = vk::ImageLayout::eColorAttachmentOptimal;
+
+	vk::SubpassDescription subpass = {};
+	subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+	subpass.colorAttachmentCount = 1;
+	subpass.pColorAttachments = &colorAttachmentRef;
+
+	// Dependency ensures writing finishes before blit
+	vk::SubpassDependency dependency = {};
+	dependency.srcSubpass = 0;
+	dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
+	dependency.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+	dependency.dstStageMask = vk::PipelineStageFlagBits::eTransfer;
+	dependency.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+	dependency.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+
+	vk::RenderPassCreateInfo renderPassInfo = {};
+	renderPassInfo.attachmentCount = 1;
+	renderPassInfo.pAttachments = &colorAttachment;
+	renderPassInfo.subpassCount = 1;
+	renderPassInfo.pSubpasses = &subpass;
+	renderPassInfo.dependencyCount = 1;
+	renderPassInfo.pDependencies = &dependency;
+
+	m_offscreenRenderPass = m_device->createRenderPassUnique(renderPassInfo);
+
+	// Create Offscreen Framebuffer
+	vk::ImageView attachments[] = { *m_offscreenImageView };
+
+	vk::FramebufferCreateInfo framebufferInfo = {};
+	framebufferInfo.renderPass = *m_offscreenRenderPass;
+	framebufferInfo.attachmentCount = 1;
+	framebufferInfo.pAttachments = attachments;
+	framebufferInfo.width = width;
+	framebufferInfo.height = height;
+	framebufferInfo.layers = 1;
+
+	m_offscreenFramebuffer = m_device->createFramebufferUnique(framebufferInfo);
+}
+
 void HBApplication::createFramebuffers() {
 	m_swapChainFramebuffers.clear();
 	m_swapChainFramebuffers.reserve(m_swapChainImageViews.size());
@@ -645,19 +763,106 @@ void HBApplication::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32
 
 	commandBuffer.begin(beginInfo);
 
+	uint32_t offscreenWidth = std::max(1u, m_swapChainExtent.width / 10);
+	uint32_t offscreenHeight = std::max(1u, m_swapChainExtent.height / 10);
+
+	// Phase A: Offscreen Render Pass
+	vk::ClearValue offscreenClearColor(std::array<float, 4>{0.2f, 0.2f, 0.2f, 1.0f});
+
+	vk::RenderPassBeginInfo offscreenRenderPassInfo = {};
+	offscreenRenderPassInfo.sType = vk::StructureType::eRenderPassBeginInfo;
+	offscreenRenderPassInfo.pNext = nullptr;
+	offscreenRenderPassInfo.renderPass = *m_offscreenRenderPass;
+	offscreenRenderPassInfo.framebuffer = *m_offscreenFramebuffer;
+	offscreenRenderPassInfo.renderArea.offset = vk::Offset2D{ 0, 0 };
+	offscreenRenderPassInfo.renderArea.extent = vk::Extent2D{ offscreenWidth, offscreenHeight };
+	offscreenRenderPassInfo.clearValueCount = 1;
+	offscreenRenderPassInfo.pClearValues = &offscreenClearColor;
+
+	commandBuffer.beginRenderPass(offscreenRenderPassInfo, vk::SubpassContents::eInline);
+
 	commandBuffer.setViewport(0, vk::Viewport{
 		0.0f, 0.0f,
-		static_cast<float>(m_swapChainExtent.width),
-		static_cast<float>(m_swapChainExtent.height),
+		static_cast<float>(offscreenWidth),
+		static_cast<float>(offscreenHeight),
 		0.0f, 1.0f
 		});
 	commandBuffer.setScissor(0, vk::Rect2D{
 		vk::Offset2D{ 0, 0 },
-		m_swapChainExtent
+		vk::Extent2D{ offscreenWidth, offscreenHeight }
 		});
 
-	vk::ClearValue clearColor(std::array<float, 4>{0.2f, 0.2f, 0.2f, 1.0f});
+	commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipeline);
 
+	commandBuffer.draw(3, 1, 0, 0);
+
+	commandBuffer.endRenderPass();
+
+	// Phase B: Blit to Swapchain Image
+	// Barrier to transition swapchain image to TransferDstOptimal
+	vk::ImageMemoryBarrier barrierToDst = {};
+	barrierToDst.oldLayout = vk::ImageLayout::eUndefined;
+	barrierToDst.newLayout = vk::ImageLayout::eTransferDstOptimal;
+	barrierToDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrierToDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrierToDst.image = m_swapChainImages[imageIndex];
+	barrierToDst.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+	barrierToDst.subresourceRange.baseMipLevel = 0;
+	barrierToDst.subresourceRange.levelCount = 1;
+	barrierToDst.subresourceRange.baseArrayLayer = 0;
+	barrierToDst.subresourceRange.layerCount = 1;
+	barrierToDst.srcAccessMask = {};
+	barrierToDst.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+
+	commandBuffer.pipelineBarrier(
+		vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
+		{},
+		nullptr, nullptr, barrierToDst
+	);
+
+	// Blit operation
+	vk::ImageBlit blit = {};
+	blit.srcOffsets[0] = vk::Offset3D{ 0, 0, 0 };
+	blit.srcOffsets[1] = vk::Offset3D{ static_cast<int>(offscreenWidth), static_cast<int>(offscreenHeight), 1 };
+	blit.srcSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+	blit.srcSubresource.mipLevel = 0;
+	blit.srcSubresource.baseArrayLayer = 0;
+	blit.srcSubresource.layerCount = 1;
+	blit.dstOffsets[0] = vk::Offset3D{ 0, 0, 0 };
+	blit.dstOffsets[1] = vk::Offset3D{ static_cast<int>(m_swapChainExtent.width), static_cast<int>(m_swapChainExtent.height), 1 };
+	blit.dstSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+	blit.dstSubresource.mipLevel = 0;
+	blit.dstSubresource.baseArrayLayer = 0;
+	blit.dstSubresource.layerCount = 1;
+
+	commandBuffer.blitImage(
+		*m_offscreenImage, vk::ImageLayout::eTransferSrcOptimal,
+		m_swapChainImages[imageIndex], vk::ImageLayout::eTransferDstOptimal,
+		blit, vk::Filter::eNearest
+	);
+
+	// Barrier to transition swapchain image to ColorAttachmentOptimal for ImGui
+	vk::ImageMemoryBarrier barrierToColor = {};
+	barrierToColor.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+	barrierToColor.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
+	barrierToColor.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrierToColor.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrierToColor.image = m_swapChainImages[imageIndex];
+	barrierToColor.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+	barrierToColor.subresourceRange.baseMipLevel = 0;
+	barrierToColor.subresourceRange.levelCount = 1;
+	barrierToColor.subresourceRange.baseArrayLayer = 0;
+	barrierToColor.subresourceRange.layerCount = 1;
+	barrierToColor.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+	barrierToColor.dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
+
+	commandBuffer.pipelineBarrier(
+		vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eColorAttachmentOutput,
+		{},
+		nullptr, nullptr, barrierToColor
+	);
+
+	// Phase C: ImGui Rendering (Main Render Pass over Blitted Image)
 	vk::RenderPassBeginInfo renderPassInfo = {};
 	renderPassInfo.sType = vk::StructureType::eRenderPassBeginInfo;
 	renderPassInfo.pNext = nullptr;
@@ -665,14 +870,9 @@ void HBApplication::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32
 	renderPassInfo.framebuffer = *m_swapChainFramebuffers[imageIndex];
 	renderPassInfo.renderArea.offset = vk::Offset2D{ 0, 0 };
 	renderPassInfo.renderArea.extent = m_swapChainExtent;
-	renderPassInfo.clearValueCount = 1;
-	renderPassInfo.pClearValues = &clearColor;
+	// No clear color since we are loading the blitted image
 
 	commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
-
-	commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipeline);
-
-	commandBuffer.draw(3, 1, 0, 0);
 
 	ImGui_ImplVulkan_NewFrame();
 	ImGui_ImplGlfw_NewFrame();
