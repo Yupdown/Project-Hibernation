@@ -251,7 +251,7 @@ void HBApplication::handleFramebufferResize(GLFWwindow* window, int width, int h
 		return;
 	}
 
-	m_recreateSwapchain = true;
+	recreateSwapChain();
 }
 
 void HBApplication::handleKey(GLFWwindow* window, int key, int scancode, int action, int mods) {
@@ -868,17 +868,7 @@ void HBApplication::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32
 	// No clear color since we are loading the blitted image
 
 	commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
-
-	ImGui_ImplVulkan_NewFrame();
-	ImGui_ImplGlfw_NewFrame();
-	ImGui::NewFrame();
-
-	// Render frame statistics
-	m_frameStats.renderImGui(m_vsync, m_recreateSwapchain);
-
-	ImGui::Render();
 	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
-
 	commandBuffer.endRenderPass();
 	commandBuffer.end();
 }
@@ -1029,15 +1019,25 @@ void HBApplication::render() {
 	}
 }
 
+void HBApplication::updateImGuiFrame() {
+	ImGui_ImplVulkan_NewFrame();
+	ImGui_ImplGlfw_NewFrame();
+	ImGui::NewFrame();
+
+	// Render frame statistics
+	bool recreateSwapchain = false;
+	m_frameStats.renderImGui(m_vsync, recreateSwapchain);
+	ImGui::Render();
+
+	if (recreateSwapchain) {
+		recreateSwapChain();
+	}
+}
+
 void HBApplication::mainLoop() {
 	while (!glfwWindowShouldClose(m_window)) {
 		glfwPollEvents();
-
-		if (m_recreateSwapchain) {
-			recreateSwapChain();
-			m_recreateSwapchain = false;
-		}
-
+		updateImGuiFrame();
 		if (acquireNextFrame()) {
 			render();
 			m_frameStats.update();

@@ -31,6 +31,7 @@ public:
 	uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
 	bool acquireNextFrame();
 	void render();
+	void updateImGuiFrame();
 	void mainLoop();
 	void toggleFullscreen(GLFWwindow* window, bool fullScreen);
 	void cleanup();
@@ -104,7 +105,6 @@ private:
 
 	bool m_windowFullscreen = false;
 	bool m_vsync = false;
-	bool m_recreateSwapchain = false;
 	int m_windowPosX = 0;
 	int m_windowPosY = 0;
 	int m_windowedWidth = InitWidth;
