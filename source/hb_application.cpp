@@ -914,11 +914,9 @@ void HBApplication::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32
 		ImPlot::SetupAxisLimits(ImAxis_Y1, 0, m_frameAxisLimit, ImGuiCond_Always);
 
 		// Plot frame time data
-		ImPlot::PlotLine("Max", maxData.data(), FRAME_HISTORY_SIZE, 1.0, 0.0, { ImPlotProp_LineColor, ImVec4(1.0f, 1.0f, 0.0f, 1.0f) });
-
-		ImPlot::PlotLine("Min", minData.data(), FRAME_HISTORY_SIZE, 1.0, 0.0, { ImPlotProp_LineColor, ImVec4(0.0f, 1.0f, 1.0f, 1.0f) });
-
-		ImPlot::PlotLine("Avg", avgData.data(), FRAME_HISTORY_SIZE, 1.0, 0.0, { ImPlotProp_LineColor, ImVec4(1.0f, 1.0f, 1.0f, 1.0f) });
+		ImPlot::PlotBars("Max", maxData.data(), FRAME_HISTORY_SIZE, 1.0, 0.0, { ImPlotProp_FillColor, ImVec4(0x3c / 255.0f, 0xae / 255.0f, 0xa3 / 255.0f, 1.0f), ImPlotProp_LineColor, ImVec4(0.0f, 0.0f, 0.0f, 0.0f) });
+		ImPlot::PlotBars("Avg", avgData.data(), FRAME_HISTORY_SIZE, 1.0, 0.0, { ImPlotProp_FillColor, ImVec4(0x20 / 255.0f, 0x63 / 255.0f, 0x9b / 255.0f, 1.0f), ImPlotProp_LineColor, ImVec4(0.0f, 0.0f, 0.0f, 0.0f) });
+		ImPlot::PlotBars("Min", minData.data(), FRAME_HISTORY_SIZE, 1.0, 0.0, { ImPlotProp_FillColor, ImVec4(0x17 / 255.0f, 0x3f / 255.0f, 0x5f / 255.0f, 1.0f), ImPlotProp_LineColor, ImVec4(0.0f, 0.0f, 0.0f, 0.0f) });
 
 		// Target frame time lines (120 FPS = 8.33ms, 60 FPS = 16.67ms, 30 FPS = 33.33ms)
 		float targetLine120[2] = { 8.33f, 8.33f };
