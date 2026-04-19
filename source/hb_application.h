@@ -1,5 +1,7 @@
 #pragma once
 
+#include "hb_frame_stats.h"
+
 class HBApplication {
 public:
 	static constexpr uint32_t InitWidth = 1080;
@@ -30,7 +32,6 @@ public:
 	bool acquireNextFrame();
 	void render();
 	void mainLoop();
-	void updateFrameStats();
 	void toggleFullscreen(GLFWwindow* window, bool fullScreen);
 	void cleanup();
 	static std::vector<char> readFile(const std::string& filename);
@@ -98,11 +99,6 @@ private:
 	uint32_t m_currentFrameIndex = 0;
 	uint32_t m_currentSwapchainIndex = 0;
 
-	// Frame rate measurement
-	double m_lastTime = 0.0;
-	int m_frameCount = 0;
-	double m_fps = 0.0;
-
 	uint32_t m_windowWidth = InitWidth;
 	uint32_t m_windowHeight = InitHeight;
 
@@ -114,27 +110,6 @@ private:
 	int m_windowedWidth = InitWidth;
 	int m_windowedHeight = InitHeight;
 
-	// Frame time histogram data
-	static constexpr size_t FRAME_HISTORY_SIZE = 100;
-	static constexpr double GRAPH_UPDATE_INTERVAL = 1.0 / 120.0;  // 60 FPS interval
-	static constexpr double FPS_UPDATE_INTERVAL = 1.0 / 20.0;    // 20 times per second
-
-	struct FrameTimeStats {
-		float avg = 0.0f;
-		float min = 0.0f;
-		float max = 0.0f;
-	};
-
-	std::array<FrameTimeStats, FRAME_HISTORY_SIZE> m_frameTimeHistory;
-	double m_lastFrameTime = 0.0;
-	double m_graphUpdateTimer = 0.0;
-
-	float m_currentFrameTime = 0.0f;
-	float m_minFrameTime = FLT_MAX;
-	float m_maxFrameTime = 0.0f;
-	float m_avgFrameTime = 0.0f;
-	float m_frameAxisLimit = 0.0f;
-
-	// Accumulator for current graph point
-	std::vector<float> m_frameTimeAccumulator;
+	// Frame Statistics
+	HBFrameStats m_frameStats;
 };

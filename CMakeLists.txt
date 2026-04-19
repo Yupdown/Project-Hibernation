@@ -100,6 +100,12 @@ file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/source/*.c"
 )
 
+# Collect header files (.h, .hpp)
+file(GLOB_RECURSE HEADER_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/source/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/source/*.h"
+)
+
 # Collect ImGui & ImPlot source files
 file(GLOB IMGUI_SRCS "${imgui_SOURCE_DIR}/*.cpp"
     "${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp"
@@ -113,6 +119,7 @@ source_group("ImPlot Sources" FILES ${IMPLOT_SRCS})
 # Configure Main Executable
 add_executable(${PROJECT_NAME} 
     ${SRC_FILES}
+    ${HEADER_FILES}
     ${IMGUI_SRCS}
     ${IMPLOT_SRCS}
 )
