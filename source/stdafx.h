@@ -37,13 +37,14 @@
 #include <vector>
 
 // Vulkan Library
+#define VK_ENABLE_BETA_EXTENSIONS
 #define VK_NO_PROTOTYPES
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #include <volk.h>
 #include <vulkan/vulkan.hpp>
 #include <VkBootstrap.h>
-#include <vma/vk_mem_alloc.h>
+#include <vk_mem_alloc.h>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -53,8 +54,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 // ImGui Library
+#define IMGUI_DEFINE_MATH_OPERATORS
 #define IMGUI_IMPL_VULKAN_NO_PROTOTYPES
 #include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
 #include <implot.h>
-#include "imgui/imgui_impl_glfw.h"
-#include "imgui/imgui_impl_vulkan.h"

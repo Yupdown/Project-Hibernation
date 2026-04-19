@@ -87,7 +87,7 @@ void HBApplication::logDeviceInfo(const vk::PhysicalDevice& physicalDevice) {
 void HBApplication::initVulkan() {
 #pragma region Volk Initialization
 	// Initialize volk
-	VkResult result = volkInitialize();
+	 VkResult result = volkInitialize(); 
 	if (result != VK_SUCCESS) {
 		throw std::runtime_error("Failed to initialize volk");
 	}
@@ -219,9 +219,9 @@ void HBApplication::initVulkan() {
 	createSwapChain(m_vkbDevice);
 	createImageViews();
 	createRenderPass();
+	createOffscreenResources();
 	createGraphicsPipeline();
 	createFramebuffers();
-	createOffscreenResources();
 	createCommandPool(m_vkbDevice);
 	createCommandBuffers();
 	createDescriptorPool();
@@ -239,8 +239,8 @@ void HBApplication::recreateSwapChain() {
 	
 	createSwapChain(m_vkbDevice);
 	createImageViews();
-	createFramebuffers();
 	createOffscreenResources();
+	createFramebuffers();
 }
 
 void HBApplication::handleFramebufferResize(GLFWwindow* window, int width, int height) {
@@ -282,10 +282,10 @@ void HBApplication::initImGUI() {
 	initInfo.QueueFamily = m_graphicsQueueFamilyIndex;
 	initInfo.DescriptorPool = *m_descriptorPool;
 	initInfo.Queue = m_graphicsQueue;
-	initInfo.RenderPass = *m_renderPass;
+	initInfo.PipelineInfoMain.RenderPass = *m_renderPass;
 	initInfo.MinImageCount = NumFramesInFlight;
 	initInfo.ImageCount = static_cast<uint32_t>(m_swapChainImages.size());
-	initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+	initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 	initInfo.CheckVkResultFn = [](VkResult err) {
 		if (err != VK_SUCCESS) {
 			std::cerr << "[ImGUI Vulkan] Error: " << err << std::endl;
@@ -311,6 +311,7 @@ void HBApplication::createSwapChain(vkb::Device& vkb_dev) {
 	VkPresentModeKHR presentMode = m_vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_MAILBOX_KHR;
 
 	auto swapRet = swapchainBuilder.set_old_swapchain(*m_swapChain)
+		.add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
 		.set_desired_extent(m_windowWidth, m_windowHeight)
 		.set_desired_format({ VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
 		.set_desired_present_mode(presentMode)
@@ -426,22 +427,26 @@ void HBApplication::createRenderPass() {
 }
 
 void HBApplication::createGraphicsPipeline() {
-	auto vertShaderCode = readFile("shaders/shader.vert.spv");
-	auto fragShaderCode = readFile("shaders/shader.frag.spv");
+	alignas(uint32_t) const uint32_t vertShaderCode[] = 
+#include "compiled_shaders/shader.vert.spv.h"
+	;
+	alignas(uint32_t) const uint32_t fragShaderCode[] = 
+#include "compiled_shaders/shader.frag.spv.h"
+	;
 
 	vk::ShaderModuleCreateInfo vertShaderInfo = {};
 	vertShaderInfo.sType = vk::StructureType::eShaderModuleCreateInfo;
 	vertShaderInfo.pNext = nullptr;
 	vertShaderInfo.flags = {};
-	vertShaderInfo.codeSize = vertShaderCode.size();
-	vertShaderInfo.pCode = reinterpret_cast<const uint32_t*>(vertShaderCode.data());
+	vertShaderInfo.codeSize = sizeof(vertShaderCode);
+	vertShaderInfo.pCode = vertShaderCode;
 
 	vk::ShaderModuleCreateInfo fragShaderInfo = {};
 	fragShaderInfo.sType = vk::StructureType::eShaderModuleCreateInfo;
 	fragShaderInfo.pNext = nullptr;
 	fragShaderInfo.flags = {};
-	fragShaderInfo.codeSize = fragShaderCode.size();
-	fragShaderInfo.pCode = reinterpret_cast<const uint32_t*>(fragShaderCode.data());
+	fragShaderInfo.codeSize = sizeof(fragShaderCode);
+	fragShaderInfo.pCode = fragShaderCode;
 
 	vk::UniqueShaderModule vertShaderModule = m_device->createShaderModuleUnique(vertShaderInfo);
 	vk::UniqueShaderModule fragShaderModule = m_device->createShaderModuleUnique(fragShaderInfo);
@@ -590,7 +595,7 @@ void HBApplication::createGraphicsPipeline() {
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicStateInfo;
 	pipelineInfo.layout = *m_pipelineLayout;
-	pipelineInfo.renderPass = *m_renderPass;
+	pipelineInfo.renderPass = *m_offscreenRenderPass;
 	pipelineInfo.subpass = 0;
 
 	m_graphicsPipeline = m_device->createGraphicsPipelineUnique(nullptr, pipelineInfo).value;
@@ -909,17 +914,11 @@ void HBApplication::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32
 		ImPlot::SetupAxisLimits(ImAxis_Y1, 0, m_frameAxisLimit, ImGuiCond_Always);
 
 		// Plot frame time data
-		ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
-		ImPlot::PlotLine("Max", maxData.data(), FRAME_HISTORY_SIZE);
-		ImPlot::PopStyleColor();
+		ImPlot::PlotLine("Max", maxData.data(), FRAME_HISTORY_SIZE, 1.0, 0.0, { ImPlotProp_LineColor, ImVec4(1.0f, 1.0f, 0.0f, 1.0f) });
 
-		ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.0f, 1.0f, 1.0f, 1.0f));
-		ImPlot::PlotLine("Min", minData.data(), FRAME_HISTORY_SIZE);
-		ImPlot::PopStyleColor();
+		ImPlot::PlotLine("Min", minData.data(), FRAME_HISTORY_SIZE, 1.0, 0.0, { ImPlotProp_LineColor, ImVec4(0.0f, 1.0f, 1.0f, 1.0f) });
 
-		ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-		ImPlot::PlotLine("Avg", avgData.data(), FRAME_HISTORY_SIZE);
-		ImPlot::PopStyleColor();
+		ImPlot::PlotLine("Avg", avgData.data(), FRAME_HISTORY_SIZE, 1.0, 0.0, { ImPlotProp_LineColor, ImVec4(1.0f, 1.0f, 1.0f, 1.0f) });
 
 		// Target frame time lines (120 FPS = 8.33ms, 60 FPS = 16.67ms, 30 FPS = 33.33ms)
 		float targetLine120[2] = { 8.33f, 8.33f };
@@ -927,18 +926,11 @@ void HBApplication::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32
 		float targetLine30[2] = { 33.33f, 33.33f };
 		float xData[2] = { 0.0f, static_cast<float>(FRAME_HISTORY_SIZE) };
 
-		ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.0f, 1.0f, 1.0f, 0.3f));
-		ImPlot::PlotLine("120 FPS", xData, targetLine120, 2);
-		ImPlot::PopStyleColor();
+		ImPlot::PlotLine("120 FPS", xData, targetLine120, 2, { ImPlotProp_LineColor, ImVec4(0.0f, 1.0f, 1.0f, 0.3f) });
 
-		ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(0.0f, 1.0f, 0.0f, 0.3f));
-		ImPlot::PlotLine("60 FPS", xData, targetLine60, 2);
-		ImPlot::PopStyleColor();
+		ImPlot::PlotLine("60 FPS", xData, targetLine60, 2, { ImPlotProp_LineColor, ImVec4(0.0f, 1.0f, 0.0f, 0.3f) });
 
-		ImPlot::PushStyleColor(ImPlotCol_Line, ImVec4(1.0f, 1.0f, 0.5f, 0.3f));
-		ImPlot::PlotLine("30 FPS", xData, targetLine30, 2);
-		ImPlot::PopStyleColor();
-
+		ImPlot::PlotLine("30 FPS", xData, targetLine30, 2, { ImPlotProp_LineColor, ImVec4(1.0f, 1.0f, 0.5f, 0.3f) });
 		ImPlot::EndPlot();
 	}
 
