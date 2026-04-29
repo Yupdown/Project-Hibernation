@@ -66,7 +66,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(implot)
 
 # 2. Setup Shader Compiler
-find_program(GLSLC_COMPILER glslc REQUIRED)
+find_program(GLSLANG_COMPILER glslangValidator REQUIRED)
 
 file(GLOB SHADER_FILES 
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.vert"
@@ -76,19 +76,63 @@ file(GLOB SHADER_FILES
 
 set(SHADER_SPIRV_FILES "")
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compiled_shaders")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compiled_shaders/debug")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compiled_shaders/release")
+
+set(SHADER_WRAP_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/WrapCompiledShaderHeader.cmake")
+file(WRITE "${SHADER_WRAP_SCRIPT}" [=[
+if(NOT DEFINED INPUT_FILE OR NOT DEFINED OUTPUT_FILE)
+    message(FATAL_ERROR "WrapCompiledShaderHeader: INPUT_FILE and OUTPUT_FILE required")
+endif()
+file(READ "${INPUT_FILE}" SHADER_HEADER_BODY)
+file(WRITE "${OUTPUT_FILE}" "#pragma once\nnamespace compiled_shaders {\n${SHADER_HEADER_BODY}\n} // namespace compiled_shaders\n")
+]=])
 
 foreach(SHADER_FILE IN LISTS SHADER_FILES)
     get_filename_component(SHADER_NAME ${SHADER_FILE} NAME)
-    set(OUTPUT_FILE "${CMAKE_CURRENT_BINARY_DIR}/compiled_shaders/${SHADER_NAME}.spv.h")
-    
+    string(REGEX REPLACE "[^A-Za-z0-9_]" "_" SHADER_BASE "${SHADER_NAME}")
+    set(SHADER_SYMBOL "g_${SHADER_BASE}")
+    set(TEMP_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/compiled_shaders/_tmp_${SHADER_NAME}.debug.glslang.h")
+    set(OUT_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/compiled_shaders/debug/${SHADER_NAME}.h")
+    set(TEMP_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/compiled_shaders/_tmp_${SHADER_NAME}.release.glslang.h")
+    set(OUT_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/compiled_shaders/release/${SHADER_NAME}.h")
+
     add_custom_command(
-        OUTPUT "${OUTPUT_FILE}"
-        COMMAND ${GLSLC_COMPILER} "${SHADER_FILE}" -mfmt=c -o "${OUTPUT_FILE}"
-        DEPENDS "${SHADER_FILE}"
-        COMMENT "Compiling ${SHADER_NAME} to C-array header..."
+        OUTPUT "${OUT_DEBUG}"
+        COMMAND ${GLSLANG_COMPILER} -V "${SHADER_FILE}" -g --vn "${SHADER_SYMBOL}" -o "${TEMP_DEBUG}"
+        COMMAND ${CMAKE_COMMAND} -DINPUT_FILE="${TEMP_DEBUG}" -DOUTPUT_FILE="${OUT_DEBUG}" -P "${SHADER_WRAP_SCRIPT}"
+        COMMAND ${CMAKE_COMMAND} -E remove "${TEMP_DEBUG}"
+        DEPENDS "${SHADER_FILE}" "${SHADER_WRAP_SCRIPT}"
+        COMMENT "Compiling DEBUG ${SHADER_NAME} to header..."
     )
-    list(APPEND SHADER_SPIRV_FILES "${OUTPUT_FILE}")
+
+    add_custom_command(
+        OUTPUT "${OUT_RELEASE}"
+        COMMAND ${GLSLANG_COMPILER} -V "${SHADER_FILE}" -Os --vn "${SHADER_SYMBOL}" -o "${TEMP_RELEASE}"
+        COMMAND ${CMAKE_COMMAND} -DINPUT_FILE="${TEMP_RELEASE}" -DOUTPUT_FILE="${OUT_RELEASE}" -P "${SHADER_WRAP_SCRIPT}"
+        COMMAND ${CMAKE_COMMAND} -E remove "${TEMP_RELEASE}"
+        DEPENDS "${SHADER_FILE}" "${SHADER_WRAP_SCRIPT}"
+        COMMENT "Compiling RELEASE ${SHADER_NAME} to header..."
+    )
+
+    list(APPEND SHADER_SPIRV_FILES "${OUT_DEBUG}" "${OUT_RELEASE}")
 endforeach()
+
+set(SHADER_UNIFIED_HEADER "${CMAKE_CURRENT_BINARY_DIR}/compiled_shaders/shaders.h")
+set(SHADER_UNIFIED_HEADER_CONTENT "#pragma once\n#if defined(NDEBUG)\n")
+foreach(SHADER_FILE IN LISTS SHADER_FILES)
+    get_filename_component(SHADER_NAME ${SHADER_FILE} NAME)
+    string(APPEND SHADER_UNIFIED_HEADER_CONTENT "#include \"release/${SHADER_NAME}.h\"\n")
+endforeach()
+string(APPEND SHADER_UNIFIED_HEADER_CONTENT "\n#else\n")
+foreach(SHADER_FILE IN LISTS SHADER_FILES)
+    get_filename_component(SHADER_NAME ${SHADER_FILE} NAME)
+    string(APPEND SHADER_UNIFIED_HEADER_CONTENT "#include \"debug/${SHADER_NAME}.h\"\n")
+endforeach()
+string(APPEND SHADER_UNIFIED_HEADER_CONTENT "\n#endif\n")
+file(GENERATE OUTPUT "${SHADER_UNIFIED_HEADER}" CONTENT "${SHADER_UNIFIED_HEADER_CONTENT}")
+
+list(APPEND SHADER_SPIRV_FILES "${SHADER_UNIFIED_HEADER}")
 
 # Custom Target for building shaders
 add_custom_target(CompileShaders DEPENDS ${SHADER_SPIRV_FILES})

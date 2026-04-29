@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "hb_application.h"
+#include "compiled_shaders/shaders.h"
 
 #ifdef NDEBUG
 constexpr bool g_enableValidationLayers = false;
@@ -419,26 +420,19 @@ void HBApplication::createRenderPass() {
 }
 
 void HBApplication::createGraphicsPipeline() {
-	alignas(uint32_t) const uint32_t vertShaderCode[] = 
-#include "compiled_shaders/shader.vert.spv.h"
-	;
-	alignas(uint32_t) const uint32_t fragShaderCode[] = 
-#include "compiled_shaders/shader.frag.spv.h"
-	;
-
 	vk::ShaderModuleCreateInfo vertShaderInfo = {};
 	vertShaderInfo.sType = vk::StructureType::eShaderModuleCreateInfo;
 	vertShaderInfo.pNext = nullptr;
 	vertShaderInfo.flags = {};
-	vertShaderInfo.codeSize = sizeof(vertShaderCode);
-	vertShaderInfo.pCode = vertShaderCode;
+	vertShaderInfo.codeSize = sizeof(compiled_shaders::g_shader_vert);
+	vertShaderInfo.pCode = compiled_shaders::g_shader_vert;
 
 	vk::ShaderModuleCreateInfo fragShaderInfo = {};
 	fragShaderInfo.sType = vk::StructureType::eShaderModuleCreateInfo;
 	fragShaderInfo.pNext = nullptr;
 	fragShaderInfo.flags = {};
-	fragShaderInfo.codeSize = sizeof(fragShaderCode);
-	fragShaderInfo.pCode = fragShaderCode;
+	fragShaderInfo.codeSize = sizeof(compiled_shaders::g_shader_frag);
+	fragShaderInfo.pCode = compiled_shaders::g_shader_frag;
 
 	vk::UniqueShaderModule vertShaderModule = m_device->createShaderModuleUnique(vertShaderInfo);
 	vk::UniqueShaderModule fragShaderModule = m_device->createShaderModuleUnique(fragShaderInfo);
