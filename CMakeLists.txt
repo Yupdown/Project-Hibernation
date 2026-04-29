@@ -4,6 +4,11 @@ project(project_hibernation LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# MSVC: avoid C4819 when system code page (e.g. 949) cannot represent UTF-8 in dependency headers
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # 1. Find Packages
 find_package(Vulkan REQUIRED)
 
