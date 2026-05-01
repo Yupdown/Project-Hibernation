@@ -86,12 +86,13 @@ void HBFrameStats::update() {
 	m_frameAxisLimit = std::lerp(m_frameAxisLimit, m_maxFrameTime * 1.2f, m_currentFrameTime * 16.0f);
 }
 
-void HBFrameStats::renderImGui(bool& vsync, bool& recreateSwapchain) {
+void HBFrameStats::renderImGui(bool& vsync, bool& recreateSwapchain, bool& quadWireframe) {
 	ImGui::Begin("Frame Statistics", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
 	if (ImGui::Checkbox("VSync", &vsync)) {
 		recreateSwapchain = true;
 	}
+	ImGui::Checkbox("Quad wireframe", &quadWireframe);
 
 	ImGui::Text("FPS: %.1f", m_fps);
 	ImGui::Text("Frame Time: %.3f ms", m_currentFrameTime * 1000.0f);

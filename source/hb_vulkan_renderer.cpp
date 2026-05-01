@@ -9,6 +9,17 @@ constexpr bool g_enableValidationLayers = false;
 constexpr bool g_enableValidationLayers = true;
 #endif
 
+namespace {
+
+/** Matches `QuadPushConstants` in shader.vert / shader.frag push_constant block. */
+struct QuadPushConstants {
+	uint32_t drawMode;
+	float timeSeconds;
+};
+static_assert(sizeof(QuadPushConstants) == 8);
+
+} // namespace
+
 void VulkanRenderer::logDeviceInfo(const vk::PhysicalDevice& physicalDevice) {
 	vk::PhysicalDeviceProperties deviceProperties = physicalDevice.getProperties();
 	vk::PhysicalDeviceFeatures deviceFeatures = physicalDevice.getFeatures();
@@ -120,6 +131,12 @@ void VulkanRenderer::init(GLFWwindow* window) {
 	vkb::PhysicalDevice vkb_physicalDevice = physRet.value().front();
 	logDeviceInfo(vkb_physicalDevice.physical_device);
 
+	VkPhysicalDeviceFeatures wireframeFeatures{};
+	wireframeFeatures.fillModeNonSolid = VK_TRUE;
+	if (!vkb_physicalDevice.enable_features_if_present(wireframeFeatures)) {
+		throw std::runtime_error("GPU does not support fillModeNonSolid (required for wireframe polygon mode)");
+	}
+
 	VkPhysicalDeviceVulkan12Features features12 = {};
 	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 	features12.timelineSemaphore = VK_TRUE;
@@ -196,6 +213,7 @@ void VulkanRenderer::recreateSwapChain() {
 	m_device->waitIdle();
 
 	m_graphicsPipeline.reset();
+	m_graphicsPipelineWireframe.reset();
 	m_pipelineLayout.reset();
 
 	m_offscreenFramebuffer.reset();
@@ -419,18 +437,18 @@ void VulkanRenderer::createGraphicsPipeline() {
 
 	vk::VertexInputBindingDescription vertexBinding{};
 	vertexBinding.binding = 0;
-	vertexBinding.stride = sizeof(glm::vec2) * 2;
+	vertexBinding.stride = sizeof(glm::vec3) + sizeof(glm::vec2);
 	vertexBinding.inputRate = vk::VertexInputRate::eVertex;
 
 	std::array<vk::VertexInputAttributeDescription, 2> vertexAttributes{};
 	vertexAttributes[0].location = 0;
 	vertexAttributes[0].binding = 0;
-	vertexAttributes[0].format = vk::Format::eR32G32Sfloat;
+	vertexAttributes[0].format = vk::Format::eR32G32B32Sfloat;
 	vertexAttributes[0].offset = 0;
 	vertexAttributes[1].location = 1;
 	vertexAttributes[1].binding = 0;
 	vertexAttributes[1].format = vk::Format::eR32G32Sfloat;
-	vertexAttributes[1].offset = sizeof(glm::vec2);
+	vertexAttributes[1].offset = sizeof(glm::vec3);
 
 	vk::PipelineVertexInputStateCreateInfo vertexInputInfo = {};
 	vertexInputInfo.sType = vk::StructureType::ePipelineVertexInputStateCreateInfo;
@@ -448,11 +466,15 @@ void VulkanRenderer::createGraphicsPipeline() {
 	inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
 	inputAssembly.primitiveRestartEnable = VK_FALSE;
 
+	// Viewport Y-up: Vulkan's default framebuffer has origin top-left with Y increasing downward.
+	// Negative height plus y = extent.height flips the viewport transform so NDC maps like GL / math:
+	// +Y points toward the top of the window (small framebuffer y = top of image row 0).
+	// Dynamic setViewport in recordCommandBuffer matches this for each target size.
 	vk::Viewport viewport = {};
 	viewport.x = 0.0f;
-	viewport.y = 0.0f;
+	viewport.y = (float)m_swapChainExtent.height;
 	viewport.width = (float)m_swapChainExtent.width;
-	viewport.height = (float)m_swapChainExtent.height;
+	viewport.height = -(float)m_swapChainExtent.height;
 	viewport.minDepth = 0.0f;
 	viewport.maxDepth = 1.0f;
 
@@ -489,12 +511,15 @@ void VulkanRenderer::createGraphicsPipeline() {
 	rasterizer.rasterizerDiscardEnable = VK_FALSE;
 	rasterizer.polygonMode = vk::PolygonMode::eFill;
 	rasterizer.cullMode = vk::CullModeFlagBits::eNone;
-	rasterizer.frontFace = vk::FrontFace::eClockwise;
+	rasterizer.frontFace = vk::FrontFace::eCounterClockwise;
 	rasterizer.depthBiasEnable = VK_FALSE;
 	rasterizer.depthBiasConstantFactor = 0.0f;
 	rasterizer.depthBiasClamp = 0.0f;
 	rasterizer.depthBiasSlopeFactor = 0.0f;
 	rasterizer.lineWidth = 1.0f;
+
+	vk::PipelineRasterizationStateCreateInfo rasterizerWireframe = rasterizer;
+	rasterizerWireframe.polygonMode = vk::PolygonMode::eLine;
 
 	vk::PipelineMultisampleStateCreateInfo multisampling = {};
 	multisampling.sType = vk::StructureType::ePipelineMultisampleStateCreateInfo;
@@ -532,14 +557,19 @@ void VulkanRenderer::createGraphicsPipeline() {
 
 	vk::DescriptorSetLayout dsl = *m_textureDescriptorSetLayout;
 
+	vk::PushConstantRange quadPushRange{};
+	quadPushRange.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+	quadPushRange.offset = 0;
+	quadPushRange.size = sizeof(QuadPushConstants);
+
 	vk::PipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = vk::StructureType::ePipelineLayoutCreateInfo;
 	pipelineLayoutInfo.pNext = nullptr;
 	pipelineLayoutInfo.flags = {};
 	pipelineLayoutInfo.setLayoutCount = 1;
 	pipelineLayoutInfo.pSetLayouts = &dsl;
-	pipelineLayoutInfo.pushConstantRangeCount = 0;
-	pipelineLayoutInfo.pPushConstantRanges = nullptr;
+	pipelineLayoutInfo.pushConstantRangeCount = 1;
+	pipelineLayoutInfo.pPushConstantRanges = &quadPushRange;
 
 	m_pipelineLayout = m_device->createPipelineLayoutUnique(pipelineLayoutInfo);
 
@@ -562,6 +592,11 @@ void VulkanRenderer::createGraphicsPipeline() {
 	pipelineInfo.subpass = 0;
 
 	m_graphicsPipeline = m_device->createGraphicsPipelineUnique(nullptr, pipelineInfo).value;
+
+	// Wireframe is drawn only in the swapchain render pass; RP dependencies differ from offscreen so use m_renderPass here.
+	pipelineInfo.pRasterizationState = &rasterizerWireframe;
+	pipelineInfo.renderPass = *m_renderPass;
+	m_graphicsPipelineWireframe = m_device->createGraphicsPipelineUnique(nullptr, pipelineInfo).value;
 }
 
 uint32_t VulkanRenderer::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
@@ -577,8 +612,8 @@ uint32_t VulkanRenderer::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyF
 }
 
 void VulkanRenderer::createOffscreenResources() {
-	uint32_t width = std::max(1u, m_swapChainExtent.width / 10);
-	uint32_t height = std::max(1u, m_swapChainExtent.height / 10);
+	uint32_t width = std::max(1u, 24u * m_swapChainExtent.width / m_swapChainExtent.height);
+	uint32_t height = std::max(1u, 24u);
 
 	// Create Offscreen Image
 	vk::ImageCreateInfo imageInfo = {};
@@ -729,8 +764,8 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 
 	commandBuffer.begin(beginInfo);
 
-	uint32_t offscreenWidth = std::max(1u, m_swapChainExtent.width / 10);
-	uint32_t offscreenHeight = std::max(1u, m_swapChainExtent.height / 10);
+	uint32_t offscreenWidth = std::max(1u, 24u * m_swapChainExtent.width / m_swapChainExtent.height);
+	uint32_t offscreenHeight = std::max(1u, 24u);
 
 	// Phase A: Offscreen Render Pass
 	vk::ClearValue offscreenClearColor(std::array<float, 4>{0.2f, 0.2f, 0.2f, 1.0f});
@@ -748,6 +783,16 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 	commandBuffer.beginRenderPass(offscreenRenderPassInfo, vk::SubpassContents::eInline);
 
 	{
+		float degrees = glm::mod(180.f * static_cast<float>(glfwGetTime()), 90.0f) - 45.0f;
+		glm::mat4 model = glm::rotate(glm::mat4(1.f), glm::radians(degrees), glm::vec3(0.f, 1.f, 0.f));
+
+		glm::mat4 view = glm::mat4(
+			1.0f, 0.0f, 0.0f, 0.0f,
+			0.0f, 0.5f, 0.0f, 0.0f,
+			0.0f, -0.5f, 0.0f, 0.0f,
+			0.0f, 0.0f, 0.0f, 1.0f
+		);
+
 		// Fit image inside window (same aspect as swapchain) preserving texture aspect ratio (contain).
 		float winW = static_cast<float>(std::max(1u, m_swapChainExtent.width));
 		float winH = static_cast<float>(std::max(1u, m_swapChainExtent.height));
@@ -755,24 +800,18 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 		float imgW = static_cast<float>(std::max(1u, m_pixelTexture.width));
 		float imgH = static_cast<float>(std::max(1u, m_pixelTexture.height));
 		float a_img = imgW / imgH;
-		float sx = 1.f;
+		float sx = a_img / a_win;
 		float sy = 1.f;
-		if (a_win >= a_img) {
-			sy = 1.f;
-			sx = a_img / a_win;
-		}
-		else {
-			sx = 1.f;
-			sy = a_win / a_img;
-		}
 		glm::mat4 projection = glm::scale(glm::mat4(1.f), glm::vec3(sx, sy, 1.f));
-		std::memcpy(m_cameraUniformMapped, &projection, sizeof(glm::mat4));
+		glm::mat4 matrix = projection * view * model;
+		std::memcpy(m_cameraUniformMapped, &matrix, sizeof(glm::mat4));
 	}
 
+	// Same Y-up viewport as createGraphicsPipeline (negative height, y = full height).
 	commandBuffer.setViewport(0, vk::Viewport{
-		0.0f, 0.0f,
+		0.0f, static_cast<float>(offscreenHeight),
 		static_cast<float>(offscreenWidth),
-		static_cast<float>(offscreenHeight),
+		-static_cast<float>(offscreenHeight),
 		0.0f, 1.0f
 		});
 	commandBuffer.setScissor(0, vk::Rect2D{
@@ -780,11 +819,11 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 		vk::Extent2D{ offscreenWidth, offscreenHeight }
 		});
 
-	commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipeline);
-
 	vk::Buffer vb = *m_quadVertexBuffer;
 	vk::DeviceSize vbOffset = 0;
 	commandBuffer.bindVertexBuffers(0, 1, &vb, &vbOffset);
+	vk::Buffer ib = *m_quadIndexBuffer;
+	commandBuffer.bindIndexBuffer(ib, 0, vk::IndexType::eUint16);
 
 	vk::DescriptorSet texSets[] = { m_textureDescriptorSet };
 	commandBuffer.bindDescriptorSets(
@@ -796,7 +835,22 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 		0,
 		nullptr);
 
-	commandBuffer.draw(6, 1, 0, 0);
+	constexpr uint32_t pushDrawTextured = 0u;
+	constexpr uint32_t quadIndexCount = 21u;
+
+	commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipeline);
+	{
+		QuadPushConstants push{};
+		push.drawMode = pushDrawTextured;
+		push.timeSeconds = static_cast<float>(glfwGetTime());
+		commandBuffer.pushConstants(
+			*m_pipelineLayout,
+			vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+			0,
+			sizeof(QuadPushConstants),
+			&push);
+	}
+	commandBuffer.drawIndexed(quadIndexCount, 1, 0, 0, 0);
 
 	commandBuffer.endRenderPass();
 
@@ -875,6 +929,45 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 	// No clear color since we are loading the blitted image
 
 	commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
+	constexpr uint32_t pushDrawWireframeOverlay = 1u;
+	if (m_quadWireframe) {
+		// Full-swapchain Y-up viewport (must match textured quad / pipeline convention).
+		commandBuffer.setViewport(0, vk::Viewport{
+			0.0f, static_cast<float>(m_swapChainExtent.height),
+			static_cast<float>(m_swapChainExtent.width),
+			-static_cast<float>(m_swapChainExtent.height),
+			0.0f, 1.0f
+			});
+		commandBuffer.setScissor(0, vk::Rect2D{
+			vk::Offset2D{ 0, 0 },
+			m_swapChainExtent
+			});
+		commandBuffer.bindVertexBuffers(0, 1, &vb, &vbOffset);
+		commandBuffer.bindIndexBuffer(ib, 0, vk::IndexType::eUint16);
+		commandBuffer.bindDescriptorSets(
+			vk::PipelineBindPoint::eGraphics,
+			*m_pipelineLayout,
+			0,
+			1,
+			texSets,
+			0,
+			nullptr);
+		commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipelineWireframe);
+		{
+			QuadPushConstants push{};
+			push.drawMode = pushDrawWireframeOverlay;
+			push.timeSeconds = static_cast<float>(glfwGetTime());
+			commandBuffer.pushConstants(
+				*m_pipelineLayout,
+				vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+				0,
+				sizeof(QuadPushConstants),
+				&push);
+		}
+		commandBuffer.drawIndexed(quadIndexCount, 1, 0, 0, 0);
+	}
+
 	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 	commandBuffer.endRenderPass();
 	commandBuffer.end();
@@ -1013,7 +1106,7 @@ void VulkanRenderer::createTextureResources() {
 	allocInfo.pSetLayouts = &dsl;
 	m_textureDescriptorSet = m_device->allocateDescriptorSets(allocInfo).front();
 
-	const std::filesystem::path imagePath = hb::resourceRootDirectory() / "b13.png";
+	const std::filesystem::path imagePath = hb::resourceRootDirectory() / "b11.png";
 	m_pixelTexture = hb::uploadRgba8TextureFromFile(
 		m_physicalDevice,
 		*m_device,
@@ -1047,10 +1140,37 @@ void VulkanRenderer::createTextureResources() {
 	m_device->updateDescriptorSets(writes, nullptr);
 
 	struct Vertex {
-		glm::vec2 pos;
+		glm::vec3 pos;
 		glm::vec2 uv;
 	};
-	const vk::DeviceSize vbSize = sizeof(Vertex) * 6;
+	constexpr uint32_t kQuadVertexCount = 8;
+	constexpr uint32_t kQuadIndexCount = 21;
+
+	// UVs: v=0 samples the top row of the PNG (stb first row); v=1 the bottom — matches Y-up viewport below.
+	// Clip positions use glm/OpenGL-style NDC: +Y is up (consistent with our negative-height viewport transform).
+	// All quad vertices use z = 0 (planar mesh).
+	const Vertex quadVerts[kQuadVertexCount] = {
+		{ { -1.0f, 1.0f, -1.0f },	{ 0.0f, 0.0f } },  // 0 top-left
+		{ { 1.0f, 1.0f, -1.0f },	{ 1.0f, 0.0f } },   // 1 top-right
+		{ { -1.0f, 1.0f, 0.0f },	{ 0.0f, 0.25f } }, // 2 middle-left
+		{ { 1.0f, 1.0f, 0.0f },		{ 1.0f, 0.25f } },  // 3 middle-right
+		{ { 0.0f, 1.0f, 1.0f },		{ 0.5f, 0.5f } },   // 4 center
+		{ { -1.0f, -2.0f, 0.0f	},	{ 0.0f, 1.0f } },  // 5 bottom-left
+		{ { 0.0f, -1.0f, 1.0f },	{ 0.5f, 1.0f } },   // 6 bottom-middle
+		{ { 1.0f, -2.0f, -0.0f },	{ 1.0f, 1.0f } },   // 7 bottom-right
+	};
+	// Two triangles, diagonal BL–TR: (TL,TR,BL) + (TR,BR,BL); CCW in Y-up framebuffer space matches frontFace.
+	const uint16_t quadIndices[kQuadIndexCount] = {
+		4, 1, 0,
+		4, 0, 2,
+		4, 3, 1,
+		4, 2, 5,
+		4, 7, 3,
+		4, 5, 6,
+		4, 6, 7
+	};
+
+	const vk::DeviceSize vbSize = sizeof(Vertex) * kQuadVertexCount;
 	vk::BufferCreateInfo vbInfo{};
 	vbInfo.size = vbSize;
 	vbInfo.usage = vk::BufferUsageFlagBits::eVertexBuffer;
@@ -1066,19 +1186,29 @@ void VulkanRenderer::createTextureResources() {
 	m_quadVertexMemory = m_device->allocateMemoryUnique(vbAlloc);
 	m_device->bindBufferMemory(*m_quadVertexBuffer, *m_quadVertexMemory, 0);
 
-	// UVs flipped vertically (v -> 1-v) so sampling matches stb top-first row order in the texture.
-	const Vertex quad[6] = {
-		{ { -1.f, 1.f }, { 0.f, 1.f } },
-		{ { 1.f, 1.f }, { 1.f, 1.f } },
-		{ { -1.f, -1.f }, { 0.f, 0.f } },
-		{ { 1.f, 1.f }, { 1.f, 1.f } },
-		{ { 1.f, -1.f }, { 1.f, 0.f } },
-		{ { -1.f, -1.f }, { 0.f, 0.f } },
-	};
-
 	void* vbMap = m_device->mapMemory(*m_quadVertexMemory, 0, vbSize);
-	std::memcpy(vbMap, quad, static_cast<size_t>(vbSize));
+	std::memcpy(vbMap, quadVerts, static_cast<size_t>(vbSize));
 	m_device->unmapMemory(*m_quadVertexMemory);
+
+	const vk::DeviceSize ibSize = sizeof(uint16_t) * kQuadIndexCount;
+	vk::BufferCreateInfo ibInfo{};
+	ibInfo.size = ibSize;
+	ibInfo.usage = vk::BufferUsageFlagBits::eIndexBuffer;
+	ibInfo.sharingMode = vk::SharingMode::eExclusive;
+	m_quadIndexBuffer = m_device->createBufferUnique(ibInfo);
+
+	vk::MemoryRequirements ibReq = m_device->getBufferMemoryRequirements(*m_quadIndexBuffer);
+	vk::MemoryAllocateInfo ibAlloc{};
+	ibAlloc.allocationSize = ibReq.size;
+	ibAlloc.memoryTypeIndex = findMemoryType(
+		ibReq.memoryTypeBits,
+		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+	m_quadIndexMemory = m_device->allocateMemoryUnique(ibAlloc);
+	m_device->bindBufferMemory(*m_quadIndexBuffer, *m_quadIndexMemory, 0);
+
+	void* ibMap = m_device->mapMemory(*m_quadIndexMemory, 0, ibSize);
+	std::memcpy(ibMap, quadIndices, static_cast<size_t>(ibSize));
+	m_device->unmapMemory(*m_quadIndexMemory);
 }
 
 void VulkanRenderer::releaseAssetResources() {
@@ -1086,6 +1216,7 @@ void VulkanRenderer::releaseAssetResources() {
 		return;
 	}
 	m_graphicsPipeline.reset();
+	m_graphicsPipelineWireframe.reset();
 	m_pipelineLayout.reset();
 	m_textureDescriptorSet = nullptr;
 	m_gameDescriptorPool.reset();
@@ -1096,6 +1227,8 @@ void VulkanRenderer::releaseAssetResources() {
 	}
 	m_quadVertexBuffer.reset();
 	m_quadVertexMemory.reset();
+	m_quadIndexBuffer.reset();
+	m_quadIndexMemory.reset();
 	m_cameraUniformBuffer.reset();
 	m_cameraUniformMemory.reset();
 	m_pixelTexture = {};
@@ -1199,7 +1332,7 @@ void VulkanRenderer::updateImGuiFrame(HBFrameStats& frameStats) {
 	ImGui::NewFrame();
 
 	bool recreateSwapchain = false;
-	frameStats.renderImGui(m_vsync, recreateSwapchain);
+	frameStats.renderImGui(m_vsync, recreateSwapchain, m_quadWireframe);
 	ImGui::Render();
 
 	if (recreateSwapchain) {

@@ -16,7 +16,7 @@ public:
 	HBFrameStats();
 
 	void update();
-	void renderImGui(bool& vsync, bool& recreateSwapchain);
+	void renderImGui(bool& vsync, bool& recreateSwapchain, bool& quadWireframe);
 
 	// Getters
 	double getFPS() const { return m_fps; }

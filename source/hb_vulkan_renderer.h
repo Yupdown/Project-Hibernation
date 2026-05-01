@@ -62,6 +62,9 @@ private:
 	vk::UniqueRenderPass m_offscreenRenderPass;
 	vk::UniquePipelineLayout m_pipelineLayout;
 	vk::UniquePipeline m_graphicsPipeline;
+	vk::UniquePipeline m_graphicsPipelineWireframe;
+
+	bool m_quadWireframe = false;
 
 	std::vector<vk::UniqueFramebuffer> m_swapChainFramebuffers;
 	vk::UniqueFramebuffer m_offscreenFramebuffer;
@@ -101,6 +104,8 @@ private:
 	hb::LoadedTextureRgba8 m_pixelTexture;
 	vk::UniqueBuffer m_quadVertexBuffer;
 	vk::UniqueDeviceMemory m_quadVertexMemory;
+	vk::UniqueBuffer m_quadIndexBuffer;
+	vk::UniqueDeviceMemory m_quadIndexMemory;
 
 	vk::UniqueBuffer m_cameraUniformBuffer;
 	vk::UniqueDeviceMemory m_cameraUniformMemory;

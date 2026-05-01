@@ -97,7 +97,7 @@ LoadedTextureRgba8 uploadRgba8TextureFromFile(
 	imageInfo.extent = vk::Extent3D{ width, height, 1 };
 	imageInfo.mipLevels = 1;
 	imageInfo.arrayLayers = 1;
-	imageInfo.format = vk::Format::eR8G8B8A8Srgb;
+	imageInfo.format = vk::Format::eR8G8B8A8Unorm;
 	imageInfo.tiling = vk::ImageTiling::eOptimal;
 	imageInfo.initialLayout = vk::ImageLayout::eUndefined;
 	imageInfo.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
@@ -117,7 +117,7 @@ LoadedTextureRgba8 uploadRgba8TextureFromFile(
 	vk::ImageViewCreateInfo viewInfo{};
 	viewInfo.image = *out.image;
 	viewInfo.viewType = vk::ImageViewType::e2D;
-	viewInfo.format = vk::Format::eR8G8B8A8Srgb;
+	viewInfo.format = vk::Format::eR8G8B8A8Unorm;
 	viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
 	viewInfo.subresourceRange.baseMipLevel = 0;
 	viewInfo.subresourceRange.levelCount = 1;
