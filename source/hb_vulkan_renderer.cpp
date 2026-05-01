@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "hb_vulkan_renderer.h"
+#include "hb_resource_path.h"
 #include "compiled_shaders/shaders.h"
 
 #ifdef NDEBUG
@@ -181,26 +182,32 @@ void VulkanRenderer::init(GLFWwindow* window) {
 	createImageViews();
 	createRenderPass();
 	createOffscreenResources();
+	createTextureDescriptorSetLayout();
 	createGraphicsPipeline();
 	createFramebuffers();
 	createCommandPool(m_vkbDevice);
 	createCommandBuffers();
 	createDescriptorPool();
 	createSyncObjects();
+	createTextureResources();
 }
 
 void VulkanRenderer::recreateSwapChain() {
 	m_device->waitIdle();
-	
+
+	m_graphicsPipeline.reset();
+	m_pipelineLayout.reset();
+
 	m_offscreenFramebuffer.reset();
 	m_offscreenRenderPass.reset();
 	m_offscreenImageView.reset();
 	m_offscreenImage.reset();
 	m_offscreenImageMemory.reset();
-	
+
 	createSwapChain(m_vkbDevice);
 	createImageViews();
 	createOffscreenResources();
+	createGraphicsPipeline();
 	createFramebuffers();
 }
 
@@ -410,14 +417,29 @@ void VulkanRenderer::createGraphicsPipeline() {
 
 	vk::PipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
 
+	vk::VertexInputBindingDescription vertexBinding{};
+	vertexBinding.binding = 0;
+	vertexBinding.stride = sizeof(glm::vec2) * 2;
+	vertexBinding.inputRate = vk::VertexInputRate::eVertex;
+
+	std::array<vk::VertexInputAttributeDescription, 2> vertexAttributes{};
+	vertexAttributes[0].location = 0;
+	vertexAttributes[0].binding = 0;
+	vertexAttributes[0].format = vk::Format::eR32G32Sfloat;
+	vertexAttributes[0].offset = 0;
+	vertexAttributes[1].location = 1;
+	vertexAttributes[1].binding = 0;
+	vertexAttributes[1].format = vk::Format::eR32G32Sfloat;
+	vertexAttributes[1].offset = sizeof(glm::vec2);
+
 	vk::PipelineVertexInputStateCreateInfo vertexInputInfo = {};
 	vertexInputInfo.sType = vk::StructureType::ePipelineVertexInputStateCreateInfo;
 	vertexInputInfo.pNext = nullptr;
 	vertexInputInfo.flags = {};
-	vertexInputInfo.vertexBindingDescriptionCount = 0;
-	vertexInputInfo.pVertexBindingDescriptions = nullptr;
-	vertexInputInfo.vertexAttributeDescriptionCount = 0;
-	vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+	vertexInputInfo.vertexBindingDescriptionCount = 1;
+	vertexInputInfo.pVertexBindingDescriptions = &vertexBinding;
+	vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(vertexAttributes.size());
+	vertexInputInfo.pVertexAttributeDescriptions = vertexAttributes.data();
 
 	vk::PipelineInputAssemblyStateCreateInfo inputAssembly = {};
 	inputAssembly.sType = vk::StructureType::ePipelineInputAssemblyStateCreateInfo;
@@ -466,7 +488,7 @@ void VulkanRenderer::createGraphicsPipeline() {
 	rasterizer.depthClampEnable = VK_FALSE;
 	rasterizer.rasterizerDiscardEnable = VK_FALSE;
 	rasterizer.polygonMode = vk::PolygonMode::eFill;
-	rasterizer.cullMode = vk::CullModeFlagBits::eBack;
+	rasterizer.cullMode = vk::CullModeFlagBits::eNone;
 	rasterizer.frontFace = vk::FrontFace::eClockwise;
 	rasterizer.depthBiasEnable = VK_FALSE;
 	rasterizer.depthBiasConstantFactor = 0.0f;
@@ -508,12 +530,14 @@ void VulkanRenderer::createGraphicsPipeline() {
 	colorBlending.blendConstants[2] = 0.0f;
 	colorBlending.blendConstants[3] = 0.0f;
 
+	vk::DescriptorSetLayout dsl = *m_textureDescriptorSetLayout;
+
 	vk::PipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = vk::StructureType::ePipelineLayoutCreateInfo;
 	pipelineLayoutInfo.pNext = nullptr;
 	pipelineLayoutInfo.flags = {};
-	pipelineLayoutInfo.setLayoutCount = 0;
-	pipelineLayoutInfo.pSetLayouts = nullptr;
+	pipelineLayoutInfo.setLayoutCount = 1;
+	pipelineLayoutInfo.pSetLayouts = &dsl;
 	pipelineLayoutInfo.pushConstantRangeCount = 0;
 	pipelineLayoutInfo.pPushConstantRanges = nullptr;
 
@@ -736,7 +760,21 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 
 	commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipeline);
 
-	commandBuffer.draw(3, 1, 0, 0);
+	vk::Buffer vb = *m_quadVertexBuffer;
+	vk::DeviceSize vbOffset = 0;
+	commandBuffer.bindVertexBuffers(0, 1, &vb, &vbOffset);
+
+	vk::DescriptorSet texSets[] = { m_textureDescriptorSet };
+	commandBuffer.bindDescriptorSets(
+		vk::PipelineBindPoint::eGraphics,
+		*m_pipelineLayout,
+		0,
+		1,
+		texSets,
+		0,
+		nullptr);
+
+	commandBuffer.draw(6, 1, 0, 0);
 
 	commandBuffer.endRenderPass();
 
@@ -873,6 +911,125 @@ void VulkanRenderer::createSyncObjects() {
 	
 	m_timelineSemaphore = m_device->createSemaphoreUnique(timelineSemaphoreInfo);
 	m_timelineValue = 0;
+}
+
+void VulkanRenderer::createTextureDescriptorSetLayout() {
+	vk::DescriptorSetLayoutBinding texBinding{};
+	texBinding.binding = 0;
+	texBinding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+	texBinding.descriptorCount = 1;
+	texBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+
+	vk::DescriptorSetLayoutCreateInfo layoutInfo{};
+	layoutInfo.bindingCount = 1;
+	layoutInfo.pBindings = &texBinding;
+
+	m_textureDescriptorSetLayout = m_device->createDescriptorSetLayoutUnique(layoutInfo);
+}
+
+void VulkanRenderer::createTextureResources() {
+	vk::SamplerCreateInfo samp{};
+	samp.magFilter = vk::Filter::eNearest;
+	samp.minFilter = vk::Filter::eNearest;
+	samp.mipmapMode = vk::SamplerMipmapMode::eNearest;
+	samp.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+	samp.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+	samp.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+	samp.mipLodBias = 0.f;
+	samp.anisotropyEnable = VK_FALSE;
+	samp.maxAnisotropy = 1.f;
+	samp.compareEnable = VK_FALSE;
+	samp.minLod = 0.f;
+	samp.maxLod = 0.f;
+	samp.borderColor = vk::BorderColor::eIntOpaqueBlack;
+	m_pixelSampler = m_device->createSamplerUnique(samp);
+
+	vk::DescriptorPoolSize poolSize{};
+	poolSize.type = vk::DescriptorType::eCombinedImageSampler;
+	poolSize.descriptorCount = 1;
+
+	vk::DescriptorPoolCreateInfo poolInfo{};
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
+	m_gameDescriptorPool = m_device->createDescriptorPoolUnique(poolInfo);
+
+	vk::DescriptorSetLayout dsl = *m_textureDescriptorSetLayout;
+	vk::DescriptorSetAllocateInfo allocInfo{};
+	allocInfo.descriptorPool = *m_gameDescriptorPool;
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = &dsl;
+	m_textureDescriptorSet = m_device->allocateDescriptorSets(allocInfo).front();
+
+	const std::filesystem::path imagePath = hb::resourceRootDirectory() / "b13.png";
+	m_pixelTexture = hb::uploadRgba8TextureFromFile(
+		m_physicalDevice,
+		*m_device,
+		m_graphicsQueue,
+		*m_commandPool,
+		imagePath);
+
+	vk::DescriptorImageInfo imgInfo{};
+	imgInfo.sampler = *m_pixelSampler;
+	imgInfo.imageView = *m_pixelTexture.view;
+	imgInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+
+	vk::WriteDescriptorSet write{};
+	write.dstSet = m_textureDescriptorSet;
+	write.dstBinding = 0;
+	write.descriptorCount = 1;
+	write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+	write.pImageInfo = &imgInfo;
+	m_device->updateDescriptorSets(write, nullptr);
+
+	struct Vertex {
+		glm::vec2 pos;
+		glm::vec2 uv;
+	};
+	// UV: top-left (0,0), bottom-right (1,1) — matches stb row order and Vulkan upper-left texel origin.
+	const Vertex quad[6] = {
+		{ { -1.f, 1.f }, { 0.f, 0.f } },
+		{ { 1.f, 1.f }, { 1.f, 0.f } },
+		{ { -1.f, -1.f }, { 0.f, 1.f } },
+		{ { 1.f, 1.f }, { 1.f, 0.f } },
+		{ { 1.f, -1.f }, { 1.f, 1.f } },
+		{ { -1.f, -1.f }, { 0.f, 1.f } },
+	};
+
+	const vk::DeviceSize vbSize = sizeof(quad);
+	vk::BufferCreateInfo vbInfo{};
+	vbInfo.size = vbSize;
+	vbInfo.usage = vk::BufferUsageFlagBits::eVertexBuffer;
+	vbInfo.sharingMode = vk::SharingMode::eExclusive;
+	m_quadVertexBuffer = m_device->createBufferUnique(vbInfo);
+
+	vk::MemoryRequirements vbReq = m_device->getBufferMemoryRequirements(*m_quadVertexBuffer);
+	vk::MemoryAllocateInfo vbAlloc{};
+	vbAlloc.allocationSize = vbReq.size;
+	vbAlloc.memoryTypeIndex = findMemoryType(
+		vbReq.memoryTypeBits,
+		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+	m_quadVertexMemory = m_device->allocateMemoryUnique(vbAlloc);
+	m_device->bindBufferMemory(*m_quadVertexBuffer, *m_quadVertexMemory, 0);
+
+	void* map = m_device->mapMemory(*m_quadVertexMemory, 0, vbSize);
+	std::memcpy(map, quad, static_cast<size_t>(vbSize));
+	m_device->unmapMemory(*m_quadVertexMemory);
+}
+
+void VulkanRenderer::releaseAssetResources() {
+	if (!m_device) {
+		return;
+	}
+	m_graphicsPipeline.reset();
+	m_pipelineLayout.reset();
+	m_textureDescriptorSet = nullptr;
+	m_gameDescriptorPool.reset();
+	m_pixelSampler.reset();
+	m_quadVertexBuffer.reset();
+	m_quadVertexMemory.reset();
+	m_pixelTexture = {};
+	m_textureDescriptorSetLayout.reset();
 }
 
 bool VulkanRenderer::acquireNextFrame() {

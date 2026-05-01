@@ -70,6 +70,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(implot)
 
+# stb (header-only image loader)
+FetchContent_Declare(
+    stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_SHALLOW TRUE
+    GIT_TAG master
+)
+FetchContent_MakeAvailable(stb)
+
 # 2. Setup Shader Compiler
 find_program(GLSLANG_COMPILER glslangValidator REQUIRED)
 
@@ -180,6 +189,7 @@ target_precompile_headers(${PROJECT_NAME} PRIVATE source/stdafx.h)
 target_include_directories(${PROJECT_NAME} PRIVATE 
     ${CMAKE_CURRENT_SOURCE_DIR}/source
     ${CMAKE_CURRENT_BINARY_DIR}
+    ${stb_SOURCE_DIR}
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
     ${implot_SOURCE_DIR}

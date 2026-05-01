@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hb_frame_stats.h"
+#include "hb_image_resources.h"
 
 struct GLFWwindow;
 
@@ -18,6 +19,8 @@ public:
 	void render(HBFrameStats& frameStats);
 	void waitIdle();
 	void shutdownImGui();
+	/** Destroy GPU resources tied to stb-loaded textures (call after waitIdle, before shutdownImGui). */
+	void releaseAssetResources();
 
 private:
 	void logDeviceInfo(const vk::PhysicalDevice& physicalDevice);
@@ -33,6 +36,8 @@ private:
 	void recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32_t imageIndex);
 	void createDescriptorPool();
 	void createSyncObjects();
+	void createTextureDescriptorSetLayout();
+	void createTextureResources();
 	uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
 
 	vk::UniqueInstance m_instance;
@@ -88,4 +93,12 @@ private:
 	uint32_t m_windowHeight = InitialWindowHeight;
 
 	bool m_vsync = false;
+
+	vk::UniqueDescriptorSetLayout m_textureDescriptorSetLayout;
+	vk::UniqueSampler m_pixelSampler;
+	vk::UniqueDescriptorPool m_gameDescriptorPool;
+	vk::DescriptorSet m_textureDescriptorSet = nullptr;
+	hb::LoadedTextureRgba8 m_pixelTexture;
+	vk::UniqueBuffer m_quadVertexBuffer;
+	vk::UniqueDeviceMemory m_quadVertexMemory;
 };

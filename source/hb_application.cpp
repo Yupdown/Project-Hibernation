@@ -27,6 +27,7 @@ void HBApplication::mainLoop() {
 }
 
 void HBApplication::cleanup() {
+	m_renderer.releaseAssetResources();
 	m_renderer.shutdownImGui();
 	m_window.destroy();
 
