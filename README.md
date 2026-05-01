@@ -9,7 +9,7 @@ Ensure your development environment meets the following requirements before buil
 * **CMake:** Version 3.20 or newer.
 * **C++ Compiler:** A compiler with full **C++20** support (e.g., MSVC for Visual Studio 2022, GCC 10+, Clang 10+).
 * **[Vulkan SDK](https://vulkan.lunarg.com/sdk/home):** Must be installed on your system.
-  * **`glslc` Compiler:** The Vulkan SDK installation must include `glslc`, and it must be added to your system's `PATH` environment variable. The build system uses it to compile `.vert` and `.frag` shaders into C-array headers automatically.
+  * **`glslangValidator`:** The Vulkan SDK ships this SPIR-V compiler and validator; it must be available on your `PATH`. The build invokes it to compile `.vert`, `.frag`, and `.comp` shaders into C-array headers automatically.
 
 ## Dependencies
 
@@ -46,7 +46,7 @@ The project uses CMake's `FetchContent` to automatically download and build the 
 
 After a successful build, the executable will be located inside your build directory. 
 
-Because the build pipeline compiles shaders (`.vert`, `.frag`) into C-array headers and embeds them directly into the binary, the `.exe` file is self-contained. You do not need to manually move or copy shader files to run the application.
+Because the build pipeline compiles shaders (`.vert`, `.frag`, `.comp`) into C-array headers and embeds them directly into the binary, the `.exe` file is self-contained. You do not need to manually move or copy shader files to run the application.
 
 ```bash
 # Example for Windows
