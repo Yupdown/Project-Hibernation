@@ -88,13 +88,7 @@ LoadedTextureRgba8 uploadRgba8TextureFromFile(
 	device.bindBufferMemory(*stagingBuffer, *stagingMemory, 0);
 
 	void* mapped = device.mapMemory(*stagingMemory, 0, imageSize);
-	const size_t rowBytes = static_cast<size_t>(width) * 4u;
-	auto* dstRows = static_cast<uint8_t*>(mapped);
-	// Flip vertically for Vulkan upload so on-screen orientation matches the source file without shader UV hacks.
-	for (uint32_t y = 0; y < height; ++y) {
-		const stbi_uc* srcRow = pixels + static_cast<size_t>(height - 1u - y) * rowBytes;
-		std::memcpy(dstRows + static_cast<size_t>(y) * rowBytes, srcRow, rowBytes);
-	}
+	std::memcpy(mapped, pixels, static_cast<size_t>(imageSize));
 	device.unmapMemory(*stagingMemory);
 	stbi_image_free(pixels);
 

@@ -1066,14 +1066,14 @@ void VulkanRenderer::createTextureResources() {
 	m_quadVertexMemory = m_device->allocateMemoryUnique(vbAlloc);
 	m_device->bindBufferMemory(*m_quadVertexBuffer, *m_quadVertexMemory, 0);
 
-	// UV: top-left (0,0), bottom-right (1,1) — matches stb row order and Vulkan upper-left texel origin.
+	// UVs flipped vertically (v -> 1-v) so sampling matches stb top-first row order in the texture.
 	const Vertex quad[6] = {
-		{ { -1.f, 1.f }, { 0.f, 0.f } },
-		{ { 1.f, 1.f }, { 1.f, 0.f } },
-		{ { -1.f, -1.f }, { 0.f, 1.f } },
-		{ { 1.f, 1.f }, { 1.f, 0.f } },
-		{ { 1.f, -1.f }, { 1.f, 1.f } },
-		{ { -1.f, -1.f }, { 0.f, 1.f } },
+		{ { -1.f, 1.f }, { 0.f, 1.f } },
+		{ { 1.f, 1.f }, { 1.f, 1.f } },
+		{ { -1.f, -1.f }, { 0.f, 0.f } },
+		{ { 1.f, 1.f }, { 1.f, 1.f } },
+		{ { 1.f, -1.f }, { 1.f, 0.f } },
+		{ { -1.f, -1.f }, { 0.f, 0.f } },
 	};
 
 	void* vbMap = m_device->mapMemory(*m_quadVertexMemory, 0, vbSize);
