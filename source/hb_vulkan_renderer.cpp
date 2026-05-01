@@ -747,6 +747,28 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 
 	commandBuffer.beginRenderPass(offscreenRenderPassInfo, vk::SubpassContents::eInline);
 
+	{
+		// Fit image inside window (same aspect as swapchain) preserving texture aspect ratio (contain).
+		float winW = static_cast<float>(std::max(1u, m_swapChainExtent.width));
+		float winH = static_cast<float>(std::max(1u, m_swapChainExtent.height));
+		float a_win = winW / winH;
+		float imgW = static_cast<float>(std::max(1u, m_pixelTexture.width));
+		float imgH = static_cast<float>(std::max(1u, m_pixelTexture.height));
+		float a_img = imgW / imgH;
+		float sx = 1.f;
+		float sy = 1.f;
+		if (a_win >= a_img) {
+			sy = 1.f;
+			sx = a_img / a_win;
+		}
+		else {
+			sx = 1.f;
+			sy = a_win / a_img;
+		}
+		glm::mat4 projection = glm::scale(glm::mat4(1.f), glm::vec3(sx, sy, 1.f));
+		std::memcpy(m_cameraUniformMapped, &projection, sizeof(glm::mat4));
+	}
+
 	commandBuffer.setViewport(0, vk::Viewport{
 		0.0f, 0.0f,
 		static_cast<float>(offscreenWidth),
@@ -914,15 +936,20 @@ void VulkanRenderer::createSyncObjects() {
 }
 
 void VulkanRenderer::createTextureDescriptorSetLayout() {
-	vk::DescriptorSetLayoutBinding texBinding{};
-	texBinding.binding = 0;
-	texBinding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-	texBinding.descriptorCount = 1;
-	texBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+	vk::DescriptorSetLayoutBinding bindings[2]{};
+	bindings[0].binding = 0;
+	bindings[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+	bindings[0].descriptorCount = 1;
+	bindings[0].stageFlags = vk::ShaderStageFlagBits::eFragment;
+
+	bindings[1].binding = 1;
+	bindings[1].descriptorType = vk::DescriptorType::eUniformBuffer;
+	bindings[1].descriptorCount = 1;
+	bindings[1].stageFlags = vk::ShaderStageFlagBits::eVertex;
 
 	vk::DescriptorSetLayoutCreateInfo layoutInfo{};
-	layoutInfo.bindingCount = 1;
-	layoutInfo.pBindings = &texBinding;
+	layoutInfo.bindingCount = 2;
+	layoutInfo.pBindings = bindings;
 
 	m_textureDescriptorSetLayout = m_device->createDescriptorSetLayoutUnique(layoutInfo);
 }
@@ -944,14 +971,39 @@ void VulkanRenderer::createTextureResources() {
 	samp.borderColor = vk::BorderColor::eIntOpaqueBlack;
 	m_pixelSampler = m_device->createSamplerUnique(samp);
 
-	vk::DescriptorPoolSize poolSize{};
-	poolSize.type = vk::DescriptorType::eCombinedImageSampler;
-	poolSize.descriptorCount = 1;
+	vk::PhysicalDeviceProperties physProps = m_physicalDevice.getProperties();
+	vk::DeviceSize uboAlign = physProps.limits.minUniformBufferOffsetAlignment;
+	m_cameraUniformBufferRange = sizeof(glm::mat4);
+	if (uboAlign > 0) {
+		m_cameraUniformBufferRange = (m_cameraUniformBufferRange + uboAlign - 1) / uboAlign * uboAlign;
+	}
+
+	vk::BufferCreateInfo camBufInfo{};
+	camBufInfo.size = m_cameraUniformBufferRange;
+	camBufInfo.usage = vk::BufferUsageFlagBits::eUniformBuffer;
+	camBufInfo.sharingMode = vk::SharingMode::eExclusive;
+	m_cameraUniformBuffer = m_device->createBufferUnique(camBufInfo);
+
+	vk::MemoryRequirements camReq = m_device->getBufferMemoryRequirements(*m_cameraUniformBuffer);
+	vk::MemoryAllocateInfo camAlloc{};
+	camAlloc.allocationSize = camReq.size;
+	camAlloc.memoryTypeIndex = findMemoryType(
+		camReq.memoryTypeBits,
+		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+	m_cameraUniformMemory = m_device->allocateMemoryUnique(camAlloc);
+	m_device->bindBufferMemory(*m_cameraUniformBuffer, *m_cameraUniformMemory, 0);
+	m_cameraUniformMapped = m_device->mapMemory(*m_cameraUniformMemory, 0, camReq.size);
+
+	vk::DescriptorPoolSize poolSizes[2]{};
+	poolSizes[0].type = vk::DescriptorType::eCombinedImageSampler;
+	poolSizes[0].descriptorCount = 1;
+	poolSizes[1].type = vk::DescriptorType::eUniformBuffer;
+	poolSizes[1].descriptorCount = 1;
 
 	vk::DescriptorPoolCreateInfo poolInfo{};
 	poolInfo.maxSets = 1;
-	poolInfo.poolSizeCount = 1;
-	poolInfo.pPoolSizes = &poolSize;
+	poolInfo.poolSizeCount = 2;
+	poolInfo.pPoolSizes = poolSizes;
 	m_gameDescriptorPool = m_device->createDescriptorPoolUnique(poolInfo);
 
 	vk::DescriptorSetLayout dsl = *m_textureDescriptorSetLayout;
@@ -974,29 +1026,31 @@ void VulkanRenderer::createTextureResources() {
 	imgInfo.imageView = *m_pixelTexture.view;
 	imgInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-	vk::WriteDescriptorSet write{};
-	write.dstSet = m_textureDescriptorSet;
-	write.dstBinding = 0;
-	write.descriptorCount = 1;
-	write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-	write.pImageInfo = &imgInfo;
-	m_device->updateDescriptorSets(write, nullptr);
+	vk::DescriptorBufferInfo camBufInfoDesc{};
+	camBufInfoDesc.buffer = *m_cameraUniformBuffer;
+	camBufInfoDesc.offset = 0;
+	camBufInfoDesc.range = sizeof(glm::mat4);
+
+	std::array<vk::WriteDescriptorSet, 2> writes{};
+	writes[0].dstSet = m_textureDescriptorSet;
+	writes[0].dstBinding = 0;
+	writes[0].descriptorCount = 1;
+	writes[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+	writes[0].pImageInfo = &imgInfo;
+
+	writes[1].dstSet = m_textureDescriptorSet;
+	writes[1].dstBinding = 1;
+	writes[1].descriptorCount = 1;
+	writes[1].descriptorType = vk::DescriptorType::eUniformBuffer;
+	writes[1].pBufferInfo = &camBufInfoDesc;
+
+	m_device->updateDescriptorSets(writes, nullptr);
 
 	struct Vertex {
 		glm::vec2 pos;
 		glm::vec2 uv;
 	};
-	// UV: top-left (0,0), bottom-right (1,1) — matches stb row order and Vulkan upper-left texel origin.
-	const Vertex quad[6] = {
-		{ { -1.f, 1.f }, { 0.f, 0.f } },
-		{ { 1.f, 1.f }, { 1.f, 0.f } },
-		{ { -1.f, -1.f }, { 0.f, 1.f } },
-		{ { 1.f, 1.f }, { 1.f, 0.f } },
-		{ { 1.f, -1.f }, { 1.f, 1.f } },
-		{ { -1.f, -1.f }, { 0.f, 1.f } },
-	};
-
-	const vk::DeviceSize vbSize = sizeof(quad);
+	const vk::DeviceSize vbSize = sizeof(Vertex) * 6;
 	vk::BufferCreateInfo vbInfo{};
 	vbInfo.size = vbSize;
 	vbInfo.usage = vk::BufferUsageFlagBits::eVertexBuffer;
@@ -1012,8 +1066,18 @@ void VulkanRenderer::createTextureResources() {
 	m_quadVertexMemory = m_device->allocateMemoryUnique(vbAlloc);
 	m_device->bindBufferMemory(*m_quadVertexBuffer, *m_quadVertexMemory, 0);
 
-	void* map = m_device->mapMemory(*m_quadVertexMemory, 0, vbSize);
-	std::memcpy(map, quad, static_cast<size_t>(vbSize));
+	// UV: top-left (0,0), bottom-right (1,1) — matches stb row order and Vulkan upper-left texel origin.
+	const Vertex quad[6] = {
+		{ { -1.f, 1.f }, { 0.f, 0.f } },
+		{ { 1.f, 1.f }, { 1.f, 0.f } },
+		{ { -1.f, -1.f }, { 0.f, 1.f } },
+		{ { 1.f, 1.f }, { 1.f, 0.f } },
+		{ { 1.f, -1.f }, { 1.f, 1.f } },
+		{ { -1.f, -1.f }, { 0.f, 1.f } },
+	};
+
+	void* vbMap = m_device->mapMemory(*m_quadVertexMemory, 0, vbSize);
+	std::memcpy(vbMap, quad, static_cast<size_t>(vbSize));
 	m_device->unmapMemory(*m_quadVertexMemory);
 }
 
@@ -1026,8 +1090,14 @@ void VulkanRenderer::releaseAssetResources() {
 	m_textureDescriptorSet = nullptr;
 	m_gameDescriptorPool.reset();
 	m_pixelSampler.reset();
+	if (m_cameraUniformMapped) {
+		m_device->unmapMemory(*m_cameraUniformMemory);
+		m_cameraUniformMapped = nullptr;
+	}
 	m_quadVertexBuffer.reset();
 	m_quadVertexMemory.reset();
+	m_cameraUniformBuffer.reset();
+	m_cameraUniformMemory.reset();
 	m_pixelTexture = {};
 	m_textureDescriptorSetLayout.reset();
 }

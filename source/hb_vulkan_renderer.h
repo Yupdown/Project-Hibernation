@@ -101,4 +101,9 @@ private:
 	hb::LoadedTextureRgba8 m_pixelTexture;
 	vk::UniqueBuffer m_quadVertexBuffer;
 	vk::UniqueDeviceMemory m_quadVertexMemory;
+
+	vk::UniqueBuffer m_cameraUniformBuffer;
+	vk::UniqueDeviceMemory m_cameraUniformMemory;
+	void* m_cameraUniformMapped = nullptr;
+	vk::DeviceSize m_cameraUniformBufferRange = 0;
 };
