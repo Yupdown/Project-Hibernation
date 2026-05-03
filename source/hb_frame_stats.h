@@ -12,6 +12,8 @@ class HBFrameStats {
 public:
 	static constexpr double FPS_UPDATE_INTERVAL = 1.0 / 20.0;
 	static constexpr std::size_t STATS_FRAME_WINDOW = 100;
+	static constexpr std::size_t SAMPLE_THRESHOLD = 4096;
+	static constexpr std::size_t SAMPLE_COUNT = SAMPLE_THRESHOLD * 3;
 
 	struct FrameTimeSample {
 		double timeSec = 0.0;
@@ -51,6 +53,7 @@ public:
 
 private:
 	void updateRollingStats();
+	void compressSamples();
 
 	// FPS averaged over FPS_UPDATE_INTERVAL
 	double m_fpsIntervalStart = 0.0;

@@ -26,11 +26,10 @@ void HBFrameStats::newFrame() {
 		cumulativeMs += ms;
 	}
 	sectionMs.emplace_back("Unspecified", std::max(0.0, static_cast<double>(frameTimeMs) - cumulativeMs));
-	m_frameTimeSamples.push_back(FrameTimeSample{
-		currentTime,
-		frameTimeMs,
-		std::move(sectionMs),
-	});
+	if (m_frameTimeSamples.size() >= SAMPLE_COUNT) {
+		compressSamples();
+	}
+	m_frameTimeSamples.emplace_back(FrameTimeSample{ currentTime, frameTimeMs, std::move(sectionMs) });
 	m_stagingTimeSamples.clear();
 
 	updateRollingStats();
@@ -64,6 +63,36 @@ void HBFrameStats::updateRollingStats() {
 	m_statsLastN.avgMs = static_cast<float>(sumMs / static_cast<double>(window));
 	m_statsLastN.minMs = winMin;
 	m_statsLastN.maxMs = winMax;
+}
+
+void HBFrameStats::compressSamples()
+{
+	for (size_t index = 0; index < SAMPLE_THRESHOLD; ++index) {
+		const FrameTimeSample& lhs = m_frameTimeSamples[index * 2];
+		const FrameTimeSample& rhs = m_frameTimeSamples[index * 2 + 1];
+		std::vector<std::pair<std::string_view, double>> mergedSectionMs = lhs.sectionMs;
+		for (const auto& [sectionKey, ms] : rhs.sectionMs) {
+			const auto it = std::find_if(mergedSectionMs.begin(), mergedSectionMs.end(),
+				[&sectionKey](const std::pair<std::string_view, double>& p) {
+					return p.first == sectionKey;
+				});
+			if (it != mergedSectionMs.end()) {
+				it->second = (it->second + ms) / 2.0;
+			}
+			else {
+				mergedSectionMs.emplace_back(sectionKey, ms);
+			}
+		}
+		m_frameTimeSamples[index] = FrameTimeSample{
+			rhs.timeSec,
+			(lhs.frameTimeMs + rhs.frameTimeMs) / 2,
+			std::move(mergedSectionMs)
+		};
+	}
+	for (size_t index = 0; index < SAMPLE_THRESHOLD; ++index) {
+		m_frameTimeSamples[SAMPLE_THRESHOLD + index] = m_frameTimeSamples[SAMPLE_THRESHOLD * 2 + index];
+	}
+	m_frameTimeSamples.resize(SAMPLE_THRESHOLD * 2);
 }
 
 void HBFrameStats::renderImGui(bool& vsync, bool& recreateSwapchain, bool& quadWireframe) {
