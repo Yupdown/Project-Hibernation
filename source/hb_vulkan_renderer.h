@@ -1,6 +1,5 @@
 #pragma once
 
-#include "hb_frame_stats.h"
 #include "hb_image_resources.h"
 
 struct GLFWwindow;
@@ -14,9 +13,9 @@ public:
 	void init(GLFWwindow* window);
 	void initImGui(GLFWwindow* window);
 	void handleFramebufferResize(int width, int height);
-	void updateImGuiFrame(HBFrameStats& frameStats);
+	void updateImGuiFrame();
 	bool acquireNextFrame();
-	void render(HBFrameStats& frameStats);
+	void render();
 	void waitIdle();
 	void shutdownImGui();
 	/** Destroy GPU resources tied to stb-loaded textures (call after waitIdle, before shutdownImGui). */

@@ -1,5 +1,7 @@
 #include "stdafx.h"
 #include "hb_vulkan_renderer.h"
+#include "hb_frame_stats.h"
+#include "hb_frame_stats_macros.h"
 #include "hb_resource_path.h"
 #include "compiled_shaders/shaders.h"
 
@@ -612,8 +614,8 @@ uint32_t VulkanRenderer::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyF
 }
 
 void VulkanRenderer::createOffscreenResources() {
-	uint32_t width = std::max(1u, 24u * m_swapChainExtent.width / m_swapChainExtent.height);
-	uint32_t height = std::max(1u, 24u);
+	uint32_t width = std::max(1u, 384u * m_swapChainExtent.width / m_swapChainExtent.height);
+	uint32_t height = std::max(1u, 384u);
 
 	// Create Offscreen Image
 	vk::ImageCreateInfo imageInfo = {};
@@ -764,8 +766,8 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 
 	commandBuffer.begin(beginInfo);
 
-	uint32_t offscreenWidth = std::max(1u, 24u * m_swapChainExtent.width / m_swapChainExtent.height);
-	uint32_t offscreenHeight = std::max(1u, 24u);
+	uint32_t offscreenWidth = std::max(1u, 384u * m_swapChainExtent.width / m_swapChainExtent.height);
+	uint32_t offscreenHeight = std::max(1u, 384u);
 
 	// Phase A: Offscreen Render Pass
 	vk::ClearValue offscreenClearColor(std::array<float, 4>{0.2f, 0.2f, 0.2f, 1.0f});
@@ -800,8 +802,8 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 		float imgW = static_cast<float>(std::max(1u, m_pixelTexture.width));
 		float imgH = static_cast<float>(std::max(1u, m_pixelTexture.height));
 		float a_img = imgW / imgH;
-		float sx = a_img / a_win;
-		float sy = 1.f;
+		float sx = a_img / a_win / 16.0f;
+		float sy = 1.0f / 16.0f;
 		glm::mat4 projection = glm::scale(glm::mat4(1.f), glm::vec3(sx, sy, 1.f));
 		glm::mat4 matrix = projection * view * model;
 		std::memcpy(m_cameraUniformMapped, &matrix, sizeof(glm::mat4));
@@ -1236,6 +1238,7 @@ void VulkanRenderer::releaseAssetResources() {
 }
 
 bool VulkanRenderer::acquireNextFrame() {
+	HB_FRAME_STATS_SCOPE("Wait GPU");
 	// Check if window is minimized
 	if (m_windowWidth == 0 || m_windowHeight == 0) {
 		// Skip rendering when minimized
@@ -1250,8 +1253,9 @@ bool VulkanRenderer::acquireNextFrame() {
 		vk::Semaphore timelineSem = *m_timelineSemaphore;
 		waitInfo.pSemaphores = &timelineSem;
 		waitInfo.pValues = &m_frameTimelineValues[m_currentFrameIndex];
-		
-		auto result = m_device->waitSemaphores(waitInfo, UINT64_MAX);
+
+		const vk::Result result = m_device->waitSemaphores(waitInfo, UINT64_MAX);
+		static_cast<void>(result);
 	}
 
 	auto acquireResult = m_device->acquireNextImageKHR(*m_swapChain, UINT64_MAX, *m_imageAvailableSemaphores[m_currentFrameIndex], nullptr);
@@ -1268,7 +1272,8 @@ bool VulkanRenderer::acquireNextFrame() {
 	return true;
 }
 
-void VulkanRenderer::render(HBFrameStats& frameStats) {
+void VulkanRenderer::render() {
+	HB_FRAME_STATS_SCOPE("Render");
 	m_commandBuffers[m_currentFrameIndex]->reset();
 	recordCommandBuffer(*m_commandBuffers[m_currentFrameIndex], m_currentSwapchainIndex);
 
@@ -1287,7 +1292,7 @@ void VulkanRenderer::render(HBFrameStats& frameStats) {
 
 	m_timelineValue++;
 	m_frameTimelineValues[m_currentFrameIndex] = m_timelineValue;
-	frameStats.setTimelineValue(m_timelineValue);
+	g_frameStats.setTimelineValue(m_timelineValue);
 
 	vk::Semaphore signalSemaphores[] = { *m_renderFinishedSemaphores[m_currentFrameIndex], *m_timelineSemaphore };
 	uint64_t waitValues[] = { 0 };
@@ -1326,14 +1331,17 @@ void VulkanRenderer::render(HBFrameStats& frameStats) {
 	}
 }
 
-void VulkanRenderer::updateImGuiFrame(HBFrameStats& frameStats) {
+void VulkanRenderer::updateImGuiFrame() {
 	ImGui_ImplVulkan_NewFrame();
 	ImGui_ImplGlfw_NewFrame();
 	ImGui::NewFrame();
 
 	bool recreateSwapchain = false;
-	frameStats.renderImGui(m_vsync, recreateSwapchain, m_quadWireframe);
-	ImGui::Render();
+	{
+		HB_FRAME_STATS_SCOPE("ImGui draw");
+		g_frameStats.renderImGui(m_vsync, recreateSwapchain, m_quadWireframe);
+		ImGui::Render();
+	}
 
 	if (recreateSwapchain) {
 		recreateSwapChain();

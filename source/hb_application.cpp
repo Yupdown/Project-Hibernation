@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "hb_application.h"
+#include "hb_frame_stats.h"
 
 void HBApplication::run() {
 	m_window.setFramebufferResizeCallback([this](int width, int height) {
@@ -15,11 +16,12 @@ void HBApplication::run() {
 
 void HBApplication::mainLoop() {
 	while (!m_window.shouldClose()) {
+		g_frameStats.newFrame();
 		m_window.pollEvents();
-		m_renderer.updateImGuiFrame(m_frameStats);
-		if (m_renderer.acquireNextFrame()) {
-			m_renderer.render(m_frameStats);
-			m_frameStats.update();
+		m_renderer.updateImGuiFrame();
+		const bool frameOk = m_renderer.acquireNextFrame();
+		if (frameOk) {
+			m_renderer.render();
 		}
 	}
 

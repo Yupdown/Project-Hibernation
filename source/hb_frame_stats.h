@@ -1,57 +1,82 @@
 #pragma once
 
+#include <chrono>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <string>
+#include <string_view>
+#include <vector>
+
 class HBFrameStats {
 public:
-	static constexpr size_t FRAME_HISTORY_SIZE = 100;
-	static constexpr double GRAPH_UPDATE_INTERVAL = 1.0 / 120.0;  // 60 FPS interval
-	static constexpr double FPS_UPDATE_INTERVAL = 1.0 / 20.0;    // 20 times per second
+	static constexpr double FPS_UPDATE_INTERVAL = 1.0 / 20.0;
+	static constexpr std::size_t STATS_FRAME_WINDOW = 100;
 
-	struct FrameTimeStats {
-		float avg = 0.0f;
-		float min = 0.0f;
-		float max = 0.0f;
+	struct FrameTimeSample {
+		double timeSec = 0.0;
+		float frameTimeMs = 0.0f;
+		std::vector<std::pair<std::string_view, double>> sectionMs;
 	};
 
-public:
 	HBFrameStats();
 
-	void update();
+	void newFrame();
 	void renderImGui(bool& vsync, bool& recreateSwapchain, bool& quadWireframe);
 
-	// Getters
-	double getFPS() const { return m_fps; }
-	float getCurrentFrameTime() const { return m_currentFrameTime; }
-	float getMinFrameTime() const { return m_minFrameTime; }
-	float getMaxFrameTime() const { return m_maxFrameTime; }
-	float getAvgFrameTime() const { return m_avgFrameTime; }
-	float getFrameAxisLimit() const { return m_frameAxisLimit; }
-	uint64_t getTimelineValue() const { return m_timelineValue; }
+	void setTimelineValue(std::uint64_t value) { m_timelineValue = value; }
 
-	// Setters
-	void setTimelineValue(uint64_t value) { m_timelineValue = value; }
+	void addSectionMs(const char* sectionName, double ms);
+
+	struct ScopedSection {
+		HBFrameStats* stats = nullptr;
+		const char* sectionName = nullptr;
+		std::chrono::steady_clock::time_point t0{};
+
+		ScopedSection(HBFrameStats& s, const char* name)
+			: stats(&s), sectionName(name), t0(std::chrono::steady_clock::now()) {}
+
+		ScopedSection(const ScopedSection&) = delete;
+		ScopedSection& operator=(const ScopedSection&) = delete;
+
+		~ScopedSection() {
+			if (!stats || !sectionName) {
+				return;
+			}
+			const double ms = std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - t0).count();
+			stats->addSectionMs(sectionName, ms);
+		}
+	};
 
 private:
-	// Frame rate measurement
-	double m_lastTime = 0.0;
-	int m_frameCount = 0;
+	void updateRollingStats();
+
+	// FPS averaged over FPS_UPDATE_INTERVAL
+	double m_fpsIntervalStart = 0.0;
+	int m_fpsFramesInInterval = 0;
 	double m_fps = 0.0;
 
-	// Frame time tracking
 	double m_lastFrameTime = 0.0;
-	double m_graphUpdateTimer = 0.0;
-
 	float m_currentFrameTime = 0.0f;
-	float m_minFrameTime = FLT_MAX;
-	float m_maxFrameTime = 0.0f;
-	float m_avgFrameTime = 0.0f;
-	float m_frameAxisLimit = 0.0f;
 
-	// Frame time histogram data
-	std::array<FrameTimeStats, FRAME_HISTORY_SIZE> m_frameTimeHistory;
+	// Last STATS_FRAME_WINDOW samples (updated each frame)
+	struct {
+		float minMs = std::numeric_limits<float>::max();
+		float maxMs = 0.0f;
+		float avgMs = 0.0f;
+	} m_statsLastN;
 
-	// Accumulator for current graph point
-	std::vector<float> m_frameTimeAccumulator;
+	std::vector<FrameTimeSample> m_frameTimeSamples;
+	std::map<std::string_view, double> m_stagingTimeSamples{};
 
-	// Timeline synchronization
-	uint64_t m_timelineValue = 0;
+	float m_plotHistoryWindowSec = 10.0f;
+	float m_plotYAxisMaxSmoothed = 1.0f;
+
+	std::vector<float> m_plotScratchX;
+	std::vector<std::vector<float>> m_plotScratchYByLayer;
+	std::uint64_t m_timelineValue = 0;
 };
+
+// Single-threaded game loop: one global stats instance (see hb_frame_stats.cpp).
+extern HBFrameStats g_frameStats;
