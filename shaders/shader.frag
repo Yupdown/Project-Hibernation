@@ -5,6 +5,7 @@ layout(push_constant) uniform QuadPushConstants {
     float timeSeconds;
     uint flipUvU;
     uint flipUvV;
+    mat4 mvp;
 } quadPush;
 
 layout(set = 0, binding = 0) uniform sampler2D texSampler;

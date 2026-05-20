@@ -1,4 +1,7 @@
 #include "stdafx.h"
+
+#include <algorithm>
+#include <cstddef>
 #include "hb_vulkan_renderer.h"
 #include "hb_frame_stats.h"
 #include "hb_frame_stats_macros.h"
@@ -12,21 +15,24 @@ constexpr bool g_enableValidationLayers = true;
 #endif
 
 constexpr uint32_t kOffscreenScale = 8u;
+constexpr uint32_t kTileMapSize = 10u;
 
 namespace {
 
-/** Matches `QuadPushConstants` in shader.vert / shader.frag push_constant block. */
+/** Matches `QuadPushConstants` in shader.vert / shader.frag (std430 push_constant layout). */
 struct QuadPushConstants {
 	uint32_t drawMode;
 	float timeSeconds;
 	uint32_t flipUvU;
 	uint32_t flipUvV;
+	alignas(16) glm::mat4 mvp;
 };
-static_assert(sizeof(QuadPushConstants) == 16);
+static_assert(sizeof(QuadPushConstants) == 80);
+static_assert(offsetof(QuadPushConstants, mvp) == 16);
 
 /** UV U flip when Y-rotation phase is in [45,135]° or [-135,-45]° on the 360° cycle (180*t mod 360). */
 bool quadFlipUvUForRotationCycle(float cycleDeg) {
-	return (cycleDeg >= 90.0f && cycleDeg <= 180.0f) || (cycleDeg >= 270.0f && cycleDeg <= 360.0f);
+	return (cycleDeg >= 45.0f && cycleDeg < 135.0f) || (cycleDeg >= 225.0f && cycleDeg < 315.0f);
 }
 
 } // namespace
@@ -521,7 +527,7 @@ void VulkanRenderer::createGraphicsPipeline() {
 	rasterizer.depthClampEnable = VK_FALSE;
 	rasterizer.rasterizerDiscardEnable = VK_FALSE;
 	rasterizer.polygonMode = vk::PolygonMode::eFill;
-	rasterizer.cullMode = vk::CullModeFlagBits::eNone;
+	rasterizer.cullMode = vk::CullModeFlagBits::eBack;
 	rasterizer.frontFace = vk::FrontFace::eCounterClockwise;
 	rasterizer.depthBiasEnable = VK_FALSE;
 	rasterizer.depthBiasConstantFactor = 0.0f;
@@ -794,33 +800,11 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 	commandBuffer.beginRenderPass(offscreenRenderPassInfo, vk::SubpassContents::eInline);
 
 	const float timeSec = static_cast<float>(glfwGetTime());
-	const float rotationCycleDeg = glm::mod(180.f * timeSec, 360.0f);
-	const bool flipUvUFromRotation = quadFlipUvUForRotationCycle(rotationCycleDeg);
+	const float degrees = glm::mod(timeSec * 180.0f, 360.0f);
+	const bool flipUvUFromRotation = quadFlipUvUForRotationCycle(degrees);
 
-	{
-		float degrees = glm::mod(180.f * timeSec, 90.0f) - 45.0f;
-		glm::mat4 model = glm::rotate(glm::mat4(1.f), glm::radians(degrees), glm::vec3(0.f, 1.f, 0.f));
-
-		glm::mat4 view = glm::mat4(
-			1.0f, 0.0f, 0.0f, 0.0f,
-			0.0f, 0.5f, 0.0f, 0.0f,
-			0.0f, -0.5f, 0.0f, 0.0f,
-			0.0f, 0.0f, 0.0f, 1.0f
-		);
-
-		// Fit image inside window (same aspect as swapchain) preserving texture aspect ratio (contain).
-		float winW = static_cast<float>(std::max(1u, m_swapChainExtent.width));
-		float winH = static_cast<float>(std::max(1u, m_swapChainExtent.height));
-		float a_win = winW / winH;
-		float imgW = static_cast<float>(std::max(1u, m_pixelTexture.width));
-		float imgH = static_cast<float>(std::max(1u, m_pixelTexture.height));
-		float a_img = imgW / imgH;
-		float sx = a_img / a_win / kOffscreenScale;
-		float sy = 1.0f / kOffscreenScale;
-		glm::mat4 projection = glm::scale(glm::mat4(1.f), glm::vec3(sx, sy, 1.f));
-		glm::mat4 matrix = projection * view * model;
-		std::memcpy(m_cameraUniformMapped, &matrix, sizeof(glm::mat4));
-	}
+	constexpr uint32_t pushDrawTextured = 0u;
+	constexpr uint32_t quadIndexCount = 21u;
 
 	// Same Y-up viewport as createGraphicsPipeline (negative height, y = full height).
 	commandBuffer.setViewport(0, vk::Viewport{
@@ -850,24 +834,82 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 		0,
 		nullptr);
 
-	constexpr uint32_t pushDrawTextured = 0u;
-	constexpr uint32_t quadIndexCount = 21u;
-
 	commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipeline);
-	{
-		QuadPushConstants push{};
-		push.drawMode = pushDrawTextured;
-		push.timeSeconds = timeSec;
-		push.flipUvU = (m_flipUvU || flipUvUFromRotation) ? 1u : 0u;
-		push.flipUvV = m_flipUvV ? 1u : 0u;
+
+	glm::mat4 view = glm::mat4(
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 0.5f, 0.0f, 0.0f,
+		0.0f, -0.5f, 1.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f
+	);
+	view = view * glm::rotate(glm::mat4(1.f), glm::radians(degrees), glm::vec3(0.f, 1.f, 0.f));
+
+	const float winW = static_cast<float>(std::max(1u, m_swapChainExtent.width));
+	const float winH = static_cast<float>(std::max(1u, m_swapChainExtent.height));
+	const float a_win = winW / winH;
+	const float imgW = static_cast<float>(std::max(1u, m_pixelTexture.width));
+	const float imgH = static_cast<float>(std::max(1u, m_pixelTexture.height));
+	const float a_img = imgW / imgH;
+	const float sx = a_img / a_win / kOffscreenScale;
+	const float sy = 1.0f / kOffscreenScale;
+	const glm::mat4 projection = glm::scale(glm::mat4(1.f), glm::vec3(sx, sy, 1.f));
+	const glm::mat4 projView = projection * view;
+
+	QuadPushConstants push{};
+	push.drawMode = pushDrawTextured;
+	push.timeSeconds = timeSec;
+	push.flipUvU = (m_flipUvU || flipUvUFromRotation) ? 1u : 0u;
+	push.flipUvV = m_flipUvV ? 1u : 0u;
+
+	struct TileDrawOrder {
+		uint32_t x;
+		uint32_t z;
+		float viewDepth;
+	};
+	TileDrawOrder drawOrder[kTileMapSize * kTileMapSize];
+	uint32_t drawCount = 0;
+	for (uint32_t z = 0; z < kTileMapSize; ++z) {
+		for (uint32_t x = 0; x < kTileMapSize; ++x) {
+			const glm::vec3 center(
+				static_cast<float>(x) + static_cast<float>(z),
+				0.f,
+				static_cast<float>(x) - static_cast<float>(z));
+			drawOrder[drawCount++] = {
+				x,
+				z,
+				(view * glm::vec4(center, 1.f)).z,
+			};
+		}
+	}
+	std::sort(
+		drawOrder,
+		drawOrder + drawCount,
+		[](const TileDrawOrder& a, const TileDrawOrder& b) { return a.viewDepth < b.viewDepth; });
+
+	glm::mat4 model0 = glm::mat4(1.f);
+	for (uint32_t i = 0; i < drawCount; ++i) {
+		const uint32_t x = drawOrder[i].x;
+		const uint32_t z = drawOrder[i].z;
+		const glm::mat4 translation = glm::translate(
+			glm::mat4(1.f),
+			glm::vec3(static_cast<float>(x) + static_cast<float>(z), 0.0f, static_cast<float>(x) - static_cast<float>(z)));
+		const glm::mat4 rotation = glm::rotate(
+			glm::mat4(1.f),
+			glm::radians(glm::floor((45.0f - degrees) / 90.0f) * 90.0f),
+			glm::vec3(0.f, 1.f, 0.f));
+		const glm::mat4 model = translation * rotation;
+		if (x == 0 && z == 0) {
+			model0 = model;
+		}
+		push.mvp = projView * model;
 		commandBuffer.pushConstants(
 			*m_pipelineLayout,
 			vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
 			0,
 			sizeof(QuadPushConstants),
 			&push);
+		commandBuffer.drawIndexed(quadIndexCount, 1, 0, 0, 0);
 	}
-	commandBuffer.drawIndexed(quadIndexCount, 1, 0, 0, 0);
 
 	commandBuffer.endRenderPass();
 
@@ -971,19 +1013,18 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 			0,
 			nullptr);
 		commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipelineWireframe);
-		{
-			QuadPushConstants push{};
-			push.drawMode = pushDrawWireframeOverlay;
-			push.timeSeconds = timeSec;
-			push.flipUvU = (m_flipUvU || flipUvUFromRotation) ? 1u : 0u;
-			push.flipUvV = m_flipUvV ? 1u : 0u;
-			commandBuffer.pushConstants(
-				*m_pipelineLayout,
-				vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
-				0,
-				sizeof(QuadPushConstants),
-				&push);
-		}
+		QuadPushConstants wirePush{};
+		wirePush.drawMode = pushDrawWireframeOverlay;
+		wirePush.timeSeconds = timeSec;
+		wirePush.flipUvU = (m_flipUvU || flipUvUFromRotation) ? 1u : 0u;
+		wirePush.flipUvV = m_flipUvV ? 1u : 0u;
+		wirePush.mvp = projView * model0;
+		commandBuffer.pushConstants(
+			*m_pipelineLayout,
+			vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+			0,
+			sizeof(QuadPushConstants),
+			&wirePush);
 		commandBuffer.drawIndexed(quadIndexCount, 1, 0, 0, 0);
 	}
 
@@ -1048,20 +1089,15 @@ void VulkanRenderer::createSyncObjects() {
 }
 
 void VulkanRenderer::createTextureDescriptorSetLayout() {
-	vk::DescriptorSetLayoutBinding bindings[2]{};
-	bindings[0].binding = 0;
-	bindings[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = vk::ShaderStageFlagBits::eFragment;
-
-	bindings[1].binding = 1;
-	bindings[1].descriptorType = vk::DescriptorType::eUniformBuffer;
-	bindings[1].descriptorCount = 1;
-	bindings[1].stageFlags = vk::ShaderStageFlagBits::eVertex;
+	vk::DescriptorSetLayoutBinding binding{};
+	binding.binding = 0;
+	binding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+	binding.descriptorCount = 1;
+	binding.stageFlags = vk::ShaderStageFlagBits::eFragment;
 
 	vk::DescriptorSetLayoutCreateInfo layoutInfo{};
-	layoutInfo.bindingCount = 2;
-	layoutInfo.pBindings = bindings;
+	layoutInfo.bindingCount = 1;
+	layoutInfo.pBindings = &binding;
 
 	m_textureDescriptorSetLayout = m_device->createDescriptorSetLayoutUnique(layoutInfo);
 }
@@ -1083,39 +1119,14 @@ void VulkanRenderer::createTextureResources() {
 	samp.borderColor = vk::BorderColor::eIntOpaqueBlack;
 	m_pixelSampler = m_device->createSamplerUnique(samp);
 
-	vk::PhysicalDeviceProperties physProps = m_physicalDevice.getProperties();
-	vk::DeviceSize uboAlign = physProps.limits.minUniformBufferOffsetAlignment;
-	m_cameraUniformBufferRange = sizeof(glm::mat4);
-	if (uboAlign > 0) {
-		m_cameraUniformBufferRange = (m_cameraUniformBufferRange + uboAlign - 1) / uboAlign * uboAlign;
-	}
-
-	vk::BufferCreateInfo camBufInfo{};
-	camBufInfo.size = m_cameraUniformBufferRange;
-	camBufInfo.usage = vk::BufferUsageFlagBits::eUniformBuffer;
-	camBufInfo.sharingMode = vk::SharingMode::eExclusive;
-	m_cameraUniformBuffer = m_device->createBufferUnique(camBufInfo);
-
-	vk::MemoryRequirements camReq = m_device->getBufferMemoryRequirements(*m_cameraUniformBuffer);
-	vk::MemoryAllocateInfo camAlloc{};
-	camAlloc.allocationSize = camReq.size;
-	camAlloc.memoryTypeIndex = findMemoryType(
-		camReq.memoryTypeBits,
-		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-	m_cameraUniformMemory = m_device->allocateMemoryUnique(camAlloc);
-	m_device->bindBufferMemory(*m_cameraUniformBuffer, *m_cameraUniformMemory, 0);
-	m_cameraUniformMapped = m_device->mapMemory(*m_cameraUniformMemory, 0, camReq.size);
-
-	vk::DescriptorPoolSize poolSizes[2]{};
-	poolSizes[0].type = vk::DescriptorType::eCombinedImageSampler;
-	poolSizes[0].descriptorCount = 1;
-	poolSizes[1].type = vk::DescriptorType::eUniformBuffer;
-	poolSizes[1].descriptorCount = 1;
+	vk::DescriptorPoolSize poolSize{};
+	poolSize.type = vk::DescriptorType::eCombinedImageSampler;
+	poolSize.descriptorCount = 1;
 
 	vk::DescriptorPoolCreateInfo poolInfo{};
 	poolInfo.maxSets = 1;
-	poolInfo.poolSizeCount = 2;
-	poolInfo.pPoolSizes = poolSizes;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
 	m_gameDescriptorPool = m_device->createDescriptorPoolUnique(poolInfo);
 
 	vk::DescriptorSetLayout dsl = *m_textureDescriptorSetLayout;
@@ -1125,7 +1136,7 @@ void VulkanRenderer::createTextureResources() {
 	allocInfo.pSetLayouts = &dsl;
 	m_textureDescriptorSet = m_device->allocateDescriptorSets(allocInfo).front();
 
-	const std::filesystem::path imagePath = hb::resourceRootDirectory() / "b17.png";
+	const std::filesystem::path imagePath = hb::resourceRootDirectory() / "b13.png";
 	m_pixelTexture = hb::uploadRgba8TextureFromFile(
 		m_physicalDevice,
 		*m_device,
@@ -1138,25 +1149,14 @@ void VulkanRenderer::createTextureResources() {
 	imgInfo.imageView = *m_pixelTexture.view;
 	imgInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-	vk::DescriptorBufferInfo camBufInfoDesc{};
-	camBufInfoDesc.buffer = *m_cameraUniformBuffer;
-	camBufInfoDesc.offset = 0;
-	camBufInfoDesc.range = sizeof(glm::mat4);
+	vk::WriteDescriptorSet write{};
+	write.dstSet = m_textureDescriptorSet;
+	write.dstBinding = 0;
+	write.descriptorCount = 1;
+	write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+	write.pImageInfo = &imgInfo;
 
-	std::array<vk::WriteDescriptorSet, 2> writes{};
-	writes[0].dstSet = m_textureDescriptorSet;
-	writes[0].dstBinding = 0;
-	writes[0].descriptorCount = 1;
-	writes[0].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-	writes[0].pImageInfo = &imgInfo;
-
-	writes[1].dstSet = m_textureDescriptorSet;
-	writes[1].dstBinding = 1;
-	writes[1].descriptorCount = 1;
-	writes[1].descriptorType = vk::DescriptorType::eUniformBuffer;
-	writes[1].pBufferInfo = &camBufInfoDesc;
-
-	m_device->updateDescriptorSets(writes, nullptr);
+	m_device->updateDescriptorSets(write, nullptr);
 
 	struct Vertex {
 		glm::vec3 pos;
@@ -1240,16 +1240,10 @@ void VulkanRenderer::releaseAssetResources() {
 	m_textureDescriptorSet = nullptr;
 	m_gameDescriptorPool.reset();
 	m_pixelSampler.reset();
-	if (m_cameraUniformMapped) {
-		m_device->unmapMemory(*m_cameraUniformMemory);
-		m_cameraUniformMapped = nullptr;
-	}
 	m_quadVertexBuffer.reset();
 	m_quadVertexMemory.reset();
 	m_quadIndexBuffer.reset();
 	m_quadIndexMemory.reset();
-	m_cameraUniformBuffer.reset();
-	m_cameraUniformMemory.reset();
 	m_pixelTexture = {};
 	m_textureDescriptorSetLayout.reset();
 }

@@ -107,9 +107,4 @@ private:
 	vk::UniqueDeviceMemory m_quadVertexMemory;
 	vk::UniqueBuffer m_quadIndexBuffer;
 	vk::UniqueDeviceMemory m_quadIndexMemory;
-
-	vk::UniqueBuffer m_cameraUniformBuffer;
-	vk::UniqueDeviceMemory m_cameraUniformMemory;
-	void* m_cameraUniformMapped = nullptr;
-	vk::DeviceSize m_cameraUniformBufferRange = 0;
 };
