@@ -3,6 +3,8 @@
 layout(push_constant) uniform QuadPushConstants {
     uint drawMode;
     float timeSeconds;
+    uint flipUvU;
+    uint flipUvV;
 } quadPush;
 
 layout(set = 0, binding = 0) uniform sampler2D texSampler;
@@ -20,7 +22,14 @@ void main() {
         return;
     }
 
-    vec4 c = texture(texSampler, fragUv);
+    vec2 uv = fragUv;
+    if (quadPush.flipUvU != 0u) {
+        uv.x = 1.0 - uv.x;
+    }
+    if (quadPush.flipUvV != 0u) {
+        uv.y = 1.0 - uv.y;
+    }
+    vec4 c = texture(texSampler, uv);
     const float kAlphaCutoff = 0.5;
     if (c.a < kAlphaCutoff) {
         discard;

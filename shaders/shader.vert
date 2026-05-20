@@ -10,6 +10,8 @@ layout(set = 0, binding = 1) uniform CameraUBO {
 layout(push_constant) uniform QuadPushConstants {
     uint drawMode;
     float timeSeconds;
+    uint flipUvU;
+    uint flipUvV;
 } quadPush;
 
 layout(location = 0) out vec2 fragUv;

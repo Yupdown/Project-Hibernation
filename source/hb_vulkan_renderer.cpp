@@ -11,14 +11,23 @@ constexpr bool g_enableValidationLayers = false;
 constexpr bool g_enableValidationLayers = true;
 #endif
 
+constexpr uint32_t kOffscreenScale = 8u;
+
 namespace {
 
 /** Matches `QuadPushConstants` in shader.vert / shader.frag push_constant block. */
 struct QuadPushConstants {
 	uint32_t drawMode;
 	float timeSeconds;
+	uint32_t flipUvU;
+	uint32_t flipUvV;
 };
-static_assert(sizeof(QuadPushConstants) == 8);
+static_assert(sizeof(QuadPushConstants) == 16);
+
+/** UV U flip when Y-rotation phase is in [45,135]° or [-135,-45]° on the 360° cycle (180*t mod 360). */
+bool quadFlipUvUForRotationCycle(float cycleDeg) {
+	return (cycleDeg >= 90.0f && cycleDeg <= 180.0f) || (cycleDeg >= 270.0f && cycleDeg <= 360.0f);
+}
 
 } // namespace
 
@@ -614,8 +623,8 @@ uint32_t VulkanRenderer::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyF
 }
 
 void VulkanRenderer::createOffscreenResources() {
-	uint32_t width = std::max(1u, 384u * m_swapChainExtent.width / m_swapChainExtent.height);
-	uint32_t height = std::max(1u, 384u);
+	uint32_t width = std::max(1u, 24u * kOffscreenScale * m_swapChainExtent.width / m_swapChainExtent.height);
+	uint32_t height = std::max(1u, 24u * kOffscreenScale);
 
 	// Create Offscreen Image
 	vk::ImageCreateInfo imageInfo = {};
@@ -766,8 +775,8 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 
 	commandBuffer.begin(beginInfo);
 
-	uint32_t offscreenWidth = std::max(1u, 384u * m_swapChainExtent.width / m_swapChainExtent.height);
-	uint32_t offscreenHeight = std::max(1u, 384u);
+	uint32_t offscreenWidth = std::max(1u, 24u * kOffscreenScale * m_swapChainExtent.width / m_swapChainExtent.height);
+	uint32_t offscreenHeight = std::max(1u, 24u * kOffscreenScale);
 
 	// Phase A: Offscreen Render Pass
 	vk::ClearValue offscreenClearColor(std::array<float, 4>{0.2f, 0.2f, 0.2f, 1.0f});
@@ -784,8 +793,12 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 
 	commandBuffer.beginRenderPass(offscreenRenderPassInfo, vk::SubpassContents::eInline);
 
+	const float timeSec = static_cast<float>(glfwGetTime());
+	const float rotationCycleDeg = glm::mod(180.f * timeSec, 360.0f);
+	const bool flipUvUFromRotation = quadFlipUvUForRotationCycle(rotationCycleDeg);
+
 	{
-		float degrees = glm::mod(180.f * static_cast<float>(glfwGetTime()), 90.0f) - 45.0f;
+		float degrees = glm::mod(180.f * timeSec, 90.0f) - 45.0f;
 		glm::mat4 model = glm::rotate(glm::mat4(1.f), glm::radians(degrees), glm::vec3(0.f, 1.f, 0.f));
 
 		glm::mat4 view = glm::mat4(
@@ -802,8 +815,8 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 		float imgW = static_cast<float>(std::max(1u, m_pixelTexture.width));
 		float imgH = static_cast<float>(std::max(1u, m_pixelTexture.height));
 		float a_img = imgW / imgH;
-		float sx = a_img / a_win / 16.0f;
-		float sy = 1.0f / 16.0f;
+		float sx = a_img / a_win / kOffscreenScale;
+		float sy = 1.0f / kOffscreenScale;
 		glm::mat4 projection = glm::scale(glm::mat4(1.f), glm::vec3(sx, sy, 1.f));
 		glm::mat4 matrix = projection * view * model;
 		std::memcpy(m_cameraUniformMapped, &matrix, sizeof(glm::mat4));
@@ -844,7 +857,9 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 	{
 		QuadPushConstants push{};
 		push.drawMode = pushDrawTextured;
-		push.timeSeconds = static_cast<float>(glfwGetTime());
+		push.timeSeconds = timeSec;
+		push.flipUvU = (m_flipUvU || flipUvUFromRotation) ? 1u : 0u;
+		push.flipUvV = m_flipUvV ? 1u : 0u;
 		commandBuffer.pushConstants(
 			*m_pipelineLayout,
 			vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
@@ -959,7 +974,9 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 		{
 			QuadPushConstants push{};
 			push.drawMode = pushDrawWireframeOverlay;
-			push.timeSeconds = static_cast<float>(glfwGetTime());
+			push.timeSeconds = timeSec;
+			push.flipUvU = (m_flipUvU || flipUvUFromRotation) ? 1u : 0u;
+			push.flipUvV = m_flipUvV ? 1u : 0u;
 			commandBuffer.pushConstants(
 				*m_pipelineLayout,
 				vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
@@ -1108,7 +1125,7 @@ void VulkanRenderer::createTextureResources() {
 	allocInfo.pSetLayouts = &dsl;
 	m_textureDescriptorSet = m_device->allocateDescriptorSets(allocInfo).front();
 
-	const std::filesystem::path imagePath = hb::resourceRootDirectory() / "b11.png";
+	const std::filesystem::path imagePath = hb::resourceRootDirectory() / "b17.png";
 	m_pixelTexture = hb::uploadRgba8TextureFromFile(
 		m_physicalDevice,
 		*m_device,
@@ -1339,7 +1356,7 @@ void VulkanRenderer::updateImGuiFrame() {
 	bool recreateSwapchain = false;
 	{
 		HB_FRAME_STATS_SCOPE("ImGui draw");
-		g_frameStats.renderImGui(m_vsync, recreateSwapchain, m_quadWireframe);
+		g_frameStats.renderImGui(m_vsync, recreateSwapchain, m_quadWireframe, m_flipUvU, m_flipUvV);
 		ImGui::Render();
 	}
 

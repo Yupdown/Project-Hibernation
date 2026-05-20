@@ -95,13 +95,15 @@ void HBFrameStats::compressSamples()
 	m_frameTimeSamples.resize(SAMPLE_THRESHOLD * 2);
 }
 
-void HBFrameStats::renderImGui(bool& vsync, bool& recreateSwapchain, bool& quadWireframe) {
+void HBFrameStats::renderImGui(bool& vsync, bool& recreateSwapchain, bool& quadWireframe, bool& flipUvU, bool& flipUvV) {
 	ImGui::Begin("Frame Statistics", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
 
 	if (ImGui::Checkbox("VSync", &vsync)) {
 		recreateSwapchain = true;
 	}
 	ImGui::Checkbox("Quad wireframe", &quadWireframe);
+	ImGui::Checkbox("Flip image U (fragment)", &flipUvU);
+	ImGui::Checkbox("Flip image V (fragment)", &flipUvV);
 
 	ImGui::Text("FPS: %.1f", m_fps);
 	ImGui::Text("Frame Time: %.3f ms", m_currentFrameTime * 1000.0f);

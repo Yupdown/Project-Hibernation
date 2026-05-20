@@ -64,6 +64,8 @@ private:
 	vk::UniquePipeline m_graphicsPipelineWireframe;
 
 	bool m_quadWireframe = false;
+	bool m_flipUvU = false;
+	bool m_flipUvV = false;
 
 	std::vector<vk::UniqueFramebuffer> m_swapChainFramebuffers;
 	vk::UniqueFramebuffer m_offscreenFramebuffer;

@@ -24,7 +24,7 @@ public:
 	HBFrameStats();
 
 	void newFrame();
-	void renderImGui(bool& vsync, bool& recreateSwapchain, bool& quadWireframe);
+	void renderImGui(bool& vsync, bool& recreateSwapchain, bool& quadWireframe, bool& flipUvU, bool& flipUvV);
 
 	void setTimelineValue(std::uint64_t value) { m_timelineValue = value; }
 
