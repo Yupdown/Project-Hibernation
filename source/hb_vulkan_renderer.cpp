@@ -1,7 +1,5 @@
 #include "stdafx.h"
 
-#include <algorithm>
-#include <cstddef>
 #include "hb_vulkan_renderer.h"
 #include "hb_frame_stats.h"
 #include "hb_frame_stats_macros.h"
@@ -15,27 +13,6 @@ constexpr bool g_enableValidationLayers = true;
 #endif
 
 constexpr uint32_t kOffscreenScale = 8u;
-constexpr uint32_t kTileMapSize = 10u;
-
-namespace {
-
-/** Matches `QuadPushConstants` in shader.vert / shader.frag (std430 push_constant layout). */
-struct QuadPushConstants {
-	uint32_t drawMode;
-	float timeSeconds;
-	uint32_t flipUvU;
-	uint32_t flipUvV;
-	alignas(16) glm::mat4 mvp;
-};
-static_assert(sizeof(QuadPushConstants) == 80);
-static_assert(offsetof(QuadPushConstants, mvp) == 16);
-
-/** UV U flip when Y-rotation phase is in [45,135]° or [-135,-45]° on the 360° cycle (180*t mod 360). */
-bool quadFlipUvUForRotationCycle(float cycleDeg) {
-	return (cycleDeg >= 45.0f && cycleDeg < 135.0f) || (cycleDeg >= 225.0f && cycleDeg < 315.0f);
-}
-
-} // namespace
 
 void VulkanRenderer::logDeviceInfo(const vk::PhysicalDevice& physicalDevice) {
 	vk::PhysicalDeviceProperties deviceProperties = physicalDevice.getProperties();
@@ -577,7 +554,7 @@ void VulkanRenderer::createGraphicsPipeline() {
 	vk::PushConstantRange quadPushRange{};
 	quadPushRange.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
 	quadPushRange.offset = 0;
-	quadPushRange.size = sizeof(QuadPushConstants);
+	quadPushRange.size = sizeof(BlockWorldPushConstants);
 
 	vk::PipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = vk::StructureType::ePipelineLayoutCreateInfo;
@@ -800,116 +777,27 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 	commandBuffer.beginRenderPass(offscreenRenderPassInfo, vk::SubpassContents::eInline);
 
 	const float timeSec = static_cast<float>(glfwGetTime());
-	const float degrees = glm::mod(timeSec * 180.0f, 360.0f);
-	const bool flipUvUFromRotation = quadFlipUvUForRotationCycle(degrees);
-
-	constexpr uint32_t pushDrawTextured = 0u;
-	constexpr uint32_t quadIndexCount = 21u;
-
-	// Same Y-up viewport as createGraphicsPipeline (negative height, y = full height).
-	commandBuffer.setViewport(0, vk::Viewport{
-		0.0f, static_cast<float>(offscreenHeight),
-		static_cast<float>(offscreenWidth),
-		-static_cast<float>(offscreenHeight),
-		0.0f, 1.0f
-		});
-	commandBuffer.setScissor(0, vk::Rect2D{
-		vk::Offset2D{ 0, 0 },
-		vk::Extent2D{ offscreenWidth, offscreenHeight }
-		});
+	m_blockWorld.update(
+		timeSec,
+		m_swapChainExtent.width,
+		m_swapChainExtent.height,
+		m_pixelTexture.width,
+		m_pixelTexture.height,
+		kOffscreenScale,
+		m_flipUvU,
+		m_flipUvV);
 
 	vk::Buffer vb = *m_quadVertexBuffer;
-	vk::DeviceSize vbOffset = 0;
-	commandBuffer.bindVertexBuffers(0, 1, &vb, &vbOffset);
 	vk::Buffer ib = *m_quadIndexBuffer;
-	commandBuffer.bindIndexBuffer(ib, 0, vk::IndexType::eUint16);
-
-	vk::DescriptorSet texSets[] = { m_textureDescriptorSet };
-	commandBuffer.bindDescriptorSets(
-		vk::PipelineBindPoint::eGraphics,
+	m_blockWorld.renderOffscreen(BlockWorldOffscreenRenderContext{
+		commandBuffer,
 		*m_pipelineLayout,
-		0,
-		1,
-		texSets,
-		0,
-		nullptr);
-
-	commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipeline);
-
-	glm::mat4 view = glm::mat4(
-		1.0f, 0.0f, 0.0f, 0.0f,
-		0.0f, 0.5f, 0.0f, 0.0f,
-		0.0f, -0.5f, 1.0f, 0.0f,
-		0.0f, 0.0f, 0.0f, 1.0f
-	);
-	view = view * glm::rotate(glm::mat4(1.f), glm::radians(degrees), glm::vec3(0.f, 1.f, 0.f));
-
-	const float winW = static_cast<float>(std::max(1u, m_swapChainExtent.width));
-	const float winH = static_cast<float>(std::max(1u, m_swapChainExtent.height));
-	const float a_win = winW / winH;
-	const float imgW = static_cast<float>(std::max(1u, m_pixelTexture.width));
-	const float imgH = static_cast<float>(std::max(1u, m_pixelTexture.height));
-	const float a_img = imgW / imgH;
-	const float sx = a_img / a_win / kOffscreenScale;
-	const float sy = 1.0f / kOffscreenScale;
-	const glm::mat4 projection = glm::scale(glm::mat4(1.f), glm::vec3(sx, sy, 1.f));
-	const glm::mat4 projView = projection * view;
-
-	QuadPushConstants push{};
-	push.drawMode = pushDrawTextured;
-	push.timeSeconds = timeSec;
-	push.flipUvU = (m_flipUvU || flipUvUFromRotation) ? 1u : 0u;
-	push.flipUvV = m_flipUvV ? 1u : 0u;
-
-	struct TileDrawOrder {
-		uint32_t x;
-		uint32_t z;
-		float viewDepth;
-	};
-	TileDrawOrder drawOrder[kTileMapSize * kTileMapSize];
-	uint32_t drawCount = 0;
-	for (uint32_t z = 0; z < kTileMapSize; ++z) {
-		for (uint32_t x = 0; x < kTileMapSize; ++x) {
-			const glm::vec3 center(
-				static_cast<float>(x) + static_cast<float>(z),
-				0.f,
-				static_cast<float>(x) - static_cast<float>(z));
-			drawOrder[drawCount++] = {
-				x,
-				z,
-				(view * glm::vec4(center, 1.f)).z,
-			};
-		}
-	}
-	std::sort(
-		drawOrder,
-		drawOrder + drawCount,
-		[](const TileDrawOrder& a, const TileDrawOrder& b) { return a.viewDepth < b.viewDepth; });
-
-	glm::mat4 model0 = glm::mat4(1.f);
-	for (uint32_t i = 0; i < drawCount; ++i) {
-		const uint32_t x = drawOrder[i].x;
-		const uint32_t z = drawOrder[i].z;
-		const glm::mat4 translation = glm::translate(
-			glm::mat4(1.f),
-			glm::vec3(static_cast<float>(x) + static_cast<float>(z), 0.0f, static_cast<float>(x) - static_cast<float>(z)));
-		const glm::mat4 rotation = glm::rotate(
-			glm::mat4(1.f),
-			glm::radians(glm::floor((45.0f - degrees) / 90.0f) * 90.0f),
-			glm::vec3(0.f, 1.f, 0.f));
-		const glm::mat4 model = translation * rotation;
-		if (x == 0 && z == 0) {
-			model0 = model;
-		}
-		push.mvp = projView * model;
-		commandBuffer.pushConstants(
-			*m_pipelineLayout,
-			vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
-			0,
-			sizeof(QuadPushConstants),
-			&push);
-		commandBuffer.drawIndexed(quadIndexCount, 1, 0, 0, 0);
-	}
+		*m_graphicsPipeline,
+		vb,
+		ib,
+		m_textureDescriptorSet,
+		vk::Extent2D{ offscreenWidth, offscreenHeight },
+		});
 
 	commandBuffer.endRenderPass();
 
@@ -989,43 +877,16 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 
 	commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
 
-	constexpr uint32_t pushDrawWireframeOverlay = 1u;
 	if (m_quadWireframe) {
-		// Full-swapchain Y-up viewport (must match textured quad / pipeline convention).
-		commandBuffer.setViewport(0, vk::Viewport{
-			0.0f, static_cast<float>(m_swapChainExtent.height),
-			static_cast<float>(m_swapChainExtent.width),
-			-static_cast<float>(m_swapChainExtent.height),
-			0.0f, 1.0f
-			});
-		commandBuffer.setScissor(0, vk::Rect2D{
-			vk::Offset2D{ 0, 0 },
-			m_swapChainExtent
-			});
-		commandBuffer.bindVertexBuffers(0, 1, &vb, &vbOffset);
-		commandBuffer.bindIndexBuffer(ib, 0, vk::IndexType::eUint16);
-		commandBuffer.bindDescriptorSets(
-			vk::PipelineBindPoint::eGraphics,
+		m_blockWorld.renderWireframe(BlockWorldWireframeRenderContext{
+			commandBuffer,
 			*m_pipelineLayout,
-			0,
-			1,
-			texSets,
-			0,
-			nullptr);
-		commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipelineWireframe);
-		QuadPushConstants wirePush{};
-		wirePush.drawMode = pushDrawWireframeOverlay;
-		wirePush.timeSeconds = timeSec;
-		wirePush.flipUvU = (m_flipUvU || flipUvUFromRotation) ? 1u : 0u;
-		wirePush.flipUvV = m_flipUvV ? 1u : 0u;
-		wirePush.mvp = projView * model0;
-		commandBuffer.pushConstants(
-			*m_pipelineLayout,
-			vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
-			0,
-			sizeof(QuadPushConstants),
-			&wirePush);
-		commandBuffer.drawIndexed(quadIndexCount, 1, 0, 0, 0);
+			*m_graphicsPipelineWireframe,
+			vb,
+			ib,
+			m_textureDescriptorSet,
+			m_swapChainExtent,
+			});
 	}
 
 	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
@@ -1163,7 +1024,7 @@ void VulkanRenderer::createTextureResources() {
 		glm::vec2 uv;
 	};
 	constexpr uint32_t kQuadVertexCount = 8;
-	constexpr uint32_t kQuadIndexCount = 21;
+	constexpr uint32_t kQuadIndexCount = BlockWorld::QuadIndexCount;
 
 	// UVs: v=0 samples the top row of the PNG (stb first row); v=1 the bottom — matches Y-up viewport below.
 	// Clip positions use glm/OpenGL-style NDC: +Y is up (consistent with our negative-height viewport transform).

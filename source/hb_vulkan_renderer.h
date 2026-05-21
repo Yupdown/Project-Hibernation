@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hb_block_world.h"
 #include "hb_image_resources.h"
 
 struct GLFWwindow;
@@ -107,4 +108,6 @@ private:
 	vk::UniqueDeviceMemory m_quadVertexMemory;
 	vk::UniqueBuffer m_quadIndexBuffer;
 	vk::UniqueDeviceMemory m_quadIndexMemory;
+
+	BlockWorld m_blockWorld;
 };
