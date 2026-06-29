@@ -14,6 +14,6 @@ layout(push_constant) uniform QuadPushConstants {
 layout(location = 0) out vec2 fragUv;
 
 void main() {
-    gl_Position = vec4((quadPush.mvp * vec4(inPosition, 1.0)).xy, 0.0, 1.0);
+    gl_Position = quadPush.mvp * vec4(inPosition, 1.0);
     fragUv = inUv;
 }

@@ -215,6 +215,9 @@ void VulkanRenderer::recreateSwapChain() {
 	m_offscreenImageView.reset();
 	m_offscreenImage.reset();
 	m_offscreenImageMemory.reset();
+	m_offscreenDepthImageView.reset();
+	m_offscreenDepthImage.reset();
+	m_offscreenDepthImageMemory.reset();
 
 	createSwapChain(m_vkbDevice);
 	createImageViews();
@@ -515,6 +518,19 @@ void VulkanRenderer::createGraphicsPipeline() {
 	vk::PipelineRasterizationStateCreateInfo rasterizerWireframe = rasterizer;
 	rasterizerWireframe.polygonMode = vk::PolygonMode::eLine;
 
+	// Depth test for the offscreen fill pass: the vertex shader projects each vertex's view-space z into
+	// clip-space depth, so the depth buffer resolves occlusion per fragment. The wireframe pipeline runs
+	// in the depthless swapchain pass and omits this state.
+	vk::PipelineDepthStencilStateCreateInfo depthStencil = {};
+	depthStencil.sType = vk::StructureType::ePipelineDepthStencilStateCreateInfo;
+	depthStencil.depthTestEnable = VK_TRUE;
+	depthStencil.depthWriteEnable = VK_TRUE;
+	depthStencil.depthCompareOp = vk::CompareOp::eLess;
+	depthStencil.depthBoundsTestEnable = VK_FALSE;
+	depthStencil.stencilTestEnable = VK_FALSE;
+	depthStencil.minDepthBounds = 0.0f;
+	depthStencil.maxDepthBounds = 1.0f;
+
 	vk::PipelineMultisampleStateCreateInfo multisampling = {};
 	multisampling.sType = vk::StructureType::ePipelineMultisampleStateCreateInfo;
 	multisampling.pNext = nullptr;
@@ -578,7 +594,7 @@ void VulkanRenderer::createGraphicsPipeline() {
 	pipelineInfo.pViewportState = &viewportState;
 	pipelineInfo.pRasterizationState = &rasterizer;
 	pipelineInfo.pMultisampleState = &multisampling;
-	pipelineInfo.pDepthStencilState = nullptr;
+	pipelineInfo.pDepthStencilState = &depthStencil;
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicStateInfo;
 	pipelineInfo.layout = *m_pipelineLayout;
@@ -588,7 +604,9 @@ void VulkanRenderer::createGraphicsPipeline() {
 	m_graphicsPipeline = m_device->createGraphicsPipelineUnique(nullptr, pipelineInfo).value;
 
 	// Wireframe is drawn only in the swapchain render pass; RP dependencies differ from offscreen so use m_renderPass here.
+	// That pass has no depth attachment, so the wireframe pipeline omits the depth-stencil state.
 	pipelineInfo.pRasterizationState = &rasterizerWireframe;
+	pipelineInfo.pDepthStencilState = nullptr;
 	pipelineInfo.renderPass = *m_renderPass;
 	m_graphicsPipelineWireframe = m_device->createGraphicsPipelineUnique(nullptr, pipelineInfo).value;
 }
@@ -647,6 +665,42 @@ void VulkanRenderer::createOffscreenResources() {
 
 	m_offscreenImageView = m_device->createImageViewUnique(viewInfo);
 
+	// Create Offscreen Depth Image (per-fragment depth test resolves tile occlusion)
+	vk::ImageCreateInfo depthImageInfo = {};
+	depthImageInfo.imageType = vk::ImageType::e2D;
+	depthImageInfo.extent = vk::Extent3D{ width, height, 1 };
+	depthImageInfo.mipLevels = 1;
+	depthImageInfo.arrayLayers = 1;
+	depthImageInfo.format = m_offscreenDepthFormat;
+	depthImageInfo.tiling = vk::ImageTiling::eOptimal;
+	depthImageInfo.initialLayout = vk::ImageLayout::eUndefined;
+	depthImageInfo.usage = vk::ImageUsageFlagBits::eDepthStencilAttachment;
+	depthImageInfo.samples = vk::SampleCountFlagBits::e1;
+	depthImageInfo.sharingMode = vk::SharingMode::eExclusive;
+
+	m_offscreenDepthImage = m_device->createImageUnique(depthImageInfo);
+
+	vk::MemoryRequirements depthMemRequirements = m_device->getImageMemoryRequirements(*m_offscreenDepthImage);
+
+	vk::MemoryAllocateInfo depthAllocInfo = {};
+	depthAllocInfo.allocationSize = depthMemRequirements.size;
+	depthAllocInfo.memoryTypeIndex = findMemoryType(depthMemRequirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+	m_offscreenDepthImageMemory = m_device->allocateMemoryUnique(depthAllocInfo);
+	m_device->bindImageMemory(*m_offscreenDepthImage, *m_offscreenDepthImageMemory, 0);
+
+	vk::ImageViewCreateInfo depthViewInfo = {};
+	depthViewInfo.image = *m_offscreenDepthImage;
+	depthViewInfo.viewType = vk::ImageViewType::e2D;
+	depthViewInfo.format = m_offscreenDepthFormat;
+	depthViewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
+	depthViewInfo.subresourceRange.baseMipLevel = 0;
+	depthViewInfo.subresourceRange.levelCount = 1;
+	depthViewInfo.subresourceRange.baseArrayLayer = 0;
+	depthViewInfo.subresourceRange.layerCount = 1;
+
+	m_offscreenDepthImageView = m_device->createImageViewUnique(depthViewInfo);
+
 	// Create Offscreen Render Pass
 	vk::AttachmentDescription colorAttachment = {};
 	colorAttachment.format = m_offscreenFormat;
@@ -658,40 +712,64 @@ void VulkanRenderer::createOffscreenResources() {
 	colorAttachment.initialLayout = vk::ImageLayout::eUndefined;
 	colorAttachment.finalLayout = vk::ImageLayout::eTransferSrcOptimal;
 
+	vk::AttachmentDescription depthAttachment = {};
+	depthAttachment.format = m_offscreenDepthFormat;
+	depthAttachment.samples = vk::SampleCountFlagBits::e1;
+	depthAttachment.loadOp = vk::AttachmentLoadOp::eClear;
+	depthAttachment.storeOp = vk::AttachmentStoreOp::eDontCare; // depth not needed after the pass
+	depthAttachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+	depthAttachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+	depthAttachment.initialLayout = vk::ImageLayout::eUndefined;
+	depthAttachment.finalLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+
 	vk::AttachmentReference colorAttachmentRef = {};
 	colorAttachmentRef.attachment = 0;
 	colorAttachmentRef.layout = vk::ImageLayout::eColorAttachmentOptimal;
+
+	vk::AttachmentReference depthAttachmentRef = {};
+	depthAttachmentRef.attachment = 1;
+	depthAttachmentRef.layout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
 	vk::SubpassDescription subpass = {};
 	subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
 	subpass.colorAttachmentCount = 1;
 	subpass.pColorAttachments = &colorAttachmentRef;
+	subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
-	// Dependency ensures writing finishes before blit
-	vk::SubpassDependency dependency = {};
-	dependency.srcSubpass = 0;
-	dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
-	dependency.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-	dependency.dstStageMask = vk::PipelineStageFlagBits::eTransfer;
-	dependency.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-	dependency.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+	std::array<vk::SubpassDependency, 2> dependencies = {};
+	// Dependency ensures color writing finishes before blit
+	dependencies[0].srcSubpass = 0;
+	dependencies[0].dstSubpass = VK_SUBPASS_EXTERNAL;
+	dependencies[0].srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+	dependencies[0].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
+	dependencies[0].srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+	dependencies[0].dstAccessMask = vk::AccessFlagBits::eTransferRead;
+	// Dependency serializes depth use against the previous frame's depth writes (single shared depth image)
+	dependencies[1].srcSubpass = VK_SUBPASS_EXTERNAL;
+	dependencies[1].dstSubpass = 0;
+	dependencies[1].srcStageMask = vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests;
+	dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests;
+	dependencies[1].srcAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+	dependencies[1].dstAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+
+	std::array<vk::AttachmentDescription, 2> offscreenAttachments = { colorAttachment, depthAttachment };
 
 	vk::RenderPassCreateInfo renderPassInfo = {};
-	renderPassInfo.attachmentCount = 1;
-	renderPassInfo.pAttachments = &colorAttachment;
+	renderPassInfo.attachmentCount = static_cast<uint32_t>(offscreenAttachments.size());
+	renderPassInfo.pAttachments = offscreenAttachments.data();
 	renderPassInfo.subpassCount = 1;
 	renderPassInfo.pSubpasses = &subpass;
-	renderPassInfo.dependencyCount = 1;
-	renderPassInfo.pDependencies = &dependency;
+	renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+	renderPassInfo.pDependencies = dependencies.data();
 
 	m_offscreenRenderPass = m_device->createRenderPassUnique(renderPassInfo);
 
 	// Create Offscreen Framebuffer
-	vk::ImageView attachments[] = { *m_offscreenImageView };
+	vk::ImageView attachments[] = { *m_offscreenImageView, *m_offscreenDepthImageView };
 
 	vk::FramebufferCreateInfo framebufferInfo = {};
 	framebufferInfo.renderPass = *m_offscreenRenderPass;
-	framebufferInfo.attachmentCount = 1;
+	framebufferInfo.attachmentCount = static_cast<uint32_t>(std::size(attachments));
 	framebufferInfo.pAttachments = attachments;
 	framebufferInfo.width = width;
 	framebufferInfo.height = height;
@@ -762,7 +840,9 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 	uint32_t offscreenHeight = std::max(1u, 24u * kOffscreenScale);
 
 	// Phase A: Offscreen Render Pass
-	vk::ClearValue offscreenClearColor(std::array<float, 4>{0.2f, 0.2f, 0.2f, 1.0f});
+	std::array<vk::ClearValue, 2> offscreenClearValues = {};
+	offscreenClearValues[0].color = vk::ClearColorValue(std::array<float, 4>{0.2f, 0.2f, 0.2f, 1.0f});
+	offscreenClearValues[1].depthStencil = vk::ClearDepthStencilValue(1.0f, 0);
 
 	vk::RenderPassBeginInfo offscreenRenderPassInfo = {};
 	offscreenRenderPassInfo.sType = vk::StructureType::eRenderPassBeginInfo;
@@ -771,8 +851,8 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 	offscreenRenderPassInfo.framebuffer = *m_offscreenFramebuffer;
 	offscreenRenderPassInfo.renderArea.offset = vk::Offset2D{ 0, 0 };
 	offscreenRenderPassInfo.renderArea.extent = vk::Extent2D{ offscreenWidth, offscreenHeight };
-	offscreenRenderPassInfo.clearValueCount = 1;
-	offscreenRenderPassInfo.pClearValues = &offscreenClearColor;
+	offscreenRenderPassInfo.clearValueCount = static_cast<uint32_t>(offscreenClearValues.size());
+	offscreenRenderPassInfo.pClearValues = offscreenClearValues.data();
 
 	commandBuffer.beginRenderPass(offscreenRenderPassInfo, vk::SubpassContents::eInline);
 

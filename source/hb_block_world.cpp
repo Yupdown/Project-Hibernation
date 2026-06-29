@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "hb_block_world.h"
+#include "hb_frame_stats_macros.h"
 
 #include <cstddef>
 
@@ -36,6 +37,8 @@ void BlockWorld::update(
 	uint32_t offscreenScale,
 	bool flipUvU,
 	bool flipUvV) {
+	HB_FRAME_STATS_SCOPE("BlockWorld update");
+
 	m_degrees = glm::mod(timeSeconds * 180.0f, 360.0f);
 	const bool flipUvUFromRotation = flipUvUForRotationCycle(m_degrees);
 
@@ -55,7 +58,13 @@ void BlockWorld::update(
 	const float a_img = imgW / imgH;
 	const float sx = a_img / a_win / static_cast<float>(offscreenScale);
 	const float sy = 1.0f / static_cast<float>(offscreenScale);
-	const glm::mat4 projection = glm::scale(glm::mat4(1.f), glm::vec3(sx, sy, 1.f));
+
+	const float zHalfRange = static_cast<float>(MapSize - 1) * glm::sqrt(5.0f) + 5.0f;
+	const float zNear = zHalfRange;  // closest: depth 0
+	const float zFar = -zHalfRange;  // farthest: depth 1
+	glm::mat4 projection = glm::scale(glm::mat4(1.f), glm::vec3(sx, sy, 1.f));
+	projection[2][2] = 1.0f / (zFar - zNear);    // clip.z scale from view-space z
+	projection[3][2] = -zNear / (zFar - zNear);  // clip.z bias
 	m_projView = projection * view;
 
 	m_texturedPush = {};
@@ -63,23 +72,6 @@ void BlockWorld::update(
 	m_texturedPush.timeSeconds = timeSeconds;
 	m_texturedPush.flipUvU = (flipUvU || flipUvUFromRotation) ? 1u : 0u;
 	m_texturedPush.flipUvV = flipUvV ? 1u : 0u;
-
-	m_sortedTiles.clear();
-	m_sortedTiles.reserve(MapSize * MapSize);
-	for (uint32_t z = 0; z < MapSize; ++z) {
-		for (uint32_t x = 0; x < MapSize; ++x) {
-			const glm::vec3 center = tileCenter(x, z);
-			m_sortedTiles.push_back({
-				x,
-				z,
-				(view * glm::vec4(center, 1.f)).z,
-			});
-		}
-	}
-	std::sort(
-		m_sortedTiles.begin(),
-		m_sortedTiles.end(),
-		[](const TileDrawOrder& a, const TileDrawOrder& b) { return a.viewDepth < b.viewDepth; });
 }
 
 void BlockWorld::renderOffscreen(const BlockWorldOffscreenRenderContext& ctx) const {
@@ -113,16 +105,17 @@ void BlockWorld::renderOffscreen(const BlockWorldOffscreenRenderContext& ctx) co
 	ctx.commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, ctx.fillPipeline);
 
 	BlockWorldPushConstants push = m_texturedPush;
-	for (const TileDrawOrder& tile : m_sortedTiles) {
-		const glm::mat4 model = tileModelMatrix(tile.x, tile.z);
-		push.mvp = m_projView * model;
-		ctx.commandBuffer.pushConstants(
-			ctx.pipelineLayout,
-			vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
-			0,
-			sizeof(BlockWorldPushConstants),
-			&push);
-		ctx.commandBuffer.drawIndexed(QuadIndexCount, 1, 0, 0, 0);
+	for (uint32_t z = 0; z < MapSize; ++z) {
+		for (uint32_t x = 0; x < MapSize; ++x) {
+			push.mvp = m_projView * tileModelMatrix(x, z);
+			ctx.commandBuffer.pushConstants(
+				ctx.pipelineLayout,
+				vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+				0,
+				sizeof(BlockWorldPushConstants),
+				&push);
+			ctx.commandBuffer.drawIndexed(QuadIndexCount, 1, 0, 0, 0);
+		}
 	}
 }
 
@@ -158,15 +151,16 @@ void BlockWorld::renderWireframe(const BlockWorldWireframeRenderContext& ctx) co
 
 	BlockWorldPushConstants wirePush = m_texturedPush;
 	wirePush.drawMode = DrawModeWireframeOverlay;
-	for (const TileDrawOrder& tile : m_sortedTiles) {
-		const glm::mat4 model = tileModelMatrix(tile.x, tile.z);
-		wirePush.mvp = m_projView * model;
-		ctx.commandBuffer.pushConstants(
-			ctx.pipelineLayout,
-			vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
-			0,
-			sizeof(BlockWorldPushConstants),
-			&wirePush);
-		ctx.commandBuffer.drawIndexed(QuadIndexCount, 1, 0, 0, 0);
+	for (uint32_t z = 0; z < MapSize; ++z) {
+		for (uint32_t x = 0; x < MapSize; ++x) {
+			wirePush.mvp = m_projView * tileModelMatrix(x, z);
+			ctx.commandBuffer.pushConstants(
+				ctx.pipelineLayout,
+				vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+				0,
+				sizeof(BlockWorldPushConstants),
+				&wirePush);
+			ctx.commandBuffer.drawIndexed(QuadIndexCount, 1, 0, 0, 0);
+		}
 	}
 }

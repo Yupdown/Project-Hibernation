@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
 
 /** Matches `QuadPushConstants` in shader.vert / shader.frag (std430 push_constant layout). */
 struct BlockWorldPushConstants {
@@ -32,7 +31,7 @@ struct BlockWorldWireframeRenderContext {
 	vk::Extent2D swapChainExtent;
 };
 
-/** CPU-sorted tile block map drawn without depth testing. */
+/** Tile block map drawn with depth testing using each vertex's projected view-space depth. */
 class BlockWorld {
 public:
 	static constexpr uint32_t MapSize = 10u;
@@ -54,12 +53,6 @@ public:
 	void renderWireframe(const BlockWorldWireframeRenderContext& ctx) const;
 
 private:
-	struct TileDrawOrder {
-		uint32_t x;
-		uint32_t z;
-		float viewDepth;
-	};
-
 	static bool flipUvUForRotationCycle(float cycleDeg);
 	static glm::vec3 tileCenter(uint32_t x, uint32_t z);
 	glm::mat4 tileModelMatrix(uint32_t x, uint32_t z) const;
@@ -67,5 +60,4 @@ private:
 	float m_degrees = 0.f;
 	glm::mat4 m_projView{ 1.f };
 	BlockWorldPushConstants m_texturedPush{};
-	std::vector<TileDrawOrder> m_sortedTiles;
 };

@@ -76,6 +76,11 @@ private:
 	vk::UniqueImageView m_offscreenImageView;
 	vk::Format m_offscreenFormat = vk::Format::eB8G8R8A8Unorm;
 
+	vk::UniqueImage m_offscreenDepthImage;
+	vk::UniqueDeviceMemory m_offscreenDepthImageMemory;
+	vk::UniqueImageView m_offscreenDepthImageView;
+	vk::Format m_offscreenDepthFormat = vk::Format::eD32Sfloat;
+
 	vk::UniqueCommandPool m_commandPool;
 	std::vector<vk::UniqueCommandBuffer> m_commandBuffers;
 
