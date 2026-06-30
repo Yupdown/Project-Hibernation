@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "hb_window.h"
+#include "hb_input.h"
 
 void HBWindow::setFramebufferResizeCallback(std::function<void(int, int)> callback) {
 	m_onFramebufferResize = std::move(callback);
@@ -29,6 +30,18 @@ void HBWindow::create() {
 	glfwSetKeyCallback(m_window,
 		[](GLFWwindow* window, int key, int scancode, int action, int mods) {
 			static_cast<HBWindow*>(glfwGetWindowUserPointer(window))->onKey(key, scancode, action, mods);
+		});
+	glfwSetMouseButtonCallback(m_window,
+		[](GLFWwindow*, int button, int action, int) {
+			HBInput::onMouseButton(button, action);
+		});
+	glfwSetCursorPosCallback(m_window,
+		[](GLFWwindow*, double x, double y) {
+			HBInput::onCursorPos(x, y);
+		});
+	glfwSetScrollCallback(m_window,
+		[](GLFWwindow*, double xOffset, double yOffset) {
+			HBInput::onScroll(xOffset, yOffset);
 		});
 	glfwSetFramebufferSizeCallback(m_window,
 		[](GLFWwindow* window, int width, int height) {
@@ -77,6 +90,7 @@ void HBWindow::onFramebufferResize(int width, int height) {
 
 void HBWindow::onKey(int key, int scancode, int action, int mods) {
 	(void)scancode;
+	HBInput::onKey(key, action);
 	if (key == GLFW_KEY_ENTER && action == GLFW_PRESS && (mods & GLFW_MOD_ALT)) {
 		toggleFullscreen(!m_fullscreen);
 	}
