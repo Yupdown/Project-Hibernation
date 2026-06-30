@@ -36,6 +36,7 @@ private:
 	void recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint32_t imageIndex);
 	void createDescriptorPool();
 	void createSyncObjects();
+	void createRenderFinishedSemaphores();
 	void createTextureDescriptorSetLayout();
 	void createTextureResources();
 	uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
@@ -84,8 +85,8 @@ private:
 	vk::UniqueCommandPool m_commandPool;
 	std::vector<vk::UniqueCommandBuffer> m_commandBuffers;
 
-	std::vector<vk::UniqueSemaphore> m_imageAvailableSemaphores;
-	std::vector<vk::UniqueSemaphore> m_renderFinishedSemaphores;
+	std::vector<vk::UniqueSemaphore> m_imageAvailableSemaphores;	// one per frame-in-flight, indexed by m_currentFrameIndex
+	std::vector<vk::UniqueSemaphore> m_renderFinishedSemaphores;	// one per swapchain image, indexed by m_currentSwapchainIndex
 	vk::UniqueSemaphore m_timelineSemaphore;
 	uint64_t m_timelineValue = 0;
 	std::vector<uint64_t> m_frameTimelineValues;

@@ -221,6 +221,7 @@ void VulkanRenderer::recreateSwapChain() {
 
 	createSwapChain(m_vkbDevice);
 	createImageViews();
+	createRenderFinishedSemaphores();
 	createOffscreenResources();
 	createGraphicsPipeline();
 	createFramebuffers();
@@ -1004,19 +1005,20 @@ void VulkanRenderer::createDescriptorPool() {
 
 void VulkanRenderer::createSyncObjects() {
 	m_imageAvailableSemaphores.clear();
-	m_renderFinishedSemaphores.clear();
 	m_frameTimelineValues.clear();
 
 	m_imageAvailableSemaphores.reserve(NumFramesInFlight);
-	m_renderFinishedSemaphores.reserve(NumFramesInFlight);
 	m_frameTimelineValues.resize(NumFramesInFlight, 0);
 
 	vk::SemaphoreCreateInfo semaphoreInfo = {};
 
+	// Image-available semaphores are per frame-in-flight: their reuse is gated by the timeline frame pacing.
 	for (size_t i = 0; i < NumFramesInFlight; ++i) {
 		m_imageAvailableSemaphores.emplace_back(m_device->createSemaphoreUnique(semaphoreInfo));
-		m_renderFinishedSemaphores.emplace_back(m_device->createSemaphoreUnique(semaphoreInfo));
 	}
+
+	// Render-finished semaphores are per swapchain image (see createRenderFinishedSemaphores).
+	createRenderFinishedSemaphores();
 
 	vk::SemaphoreTypeCreateInfo timelineCreateInfo;
 	timelineCreateInfo.semaphoreType = vk::SemaphoreType::eTimeline;
@@ -1027,6 +1029,22 @@ void VulkanRenderer::createSyncObjects() {
 	
 	m_timelineSemaphore = m_device->createSemaphoreUnique(timelineSemaphoreInfo);
 	m_timelineValue = 0;
+}
+
+// A binary semaphore waited on by vkQueuePresentKHR can only be reused once its swapchain image is
+// re-acquired (acquireNextImageKHR returning image i proves the prior present of image i — and thus its
+// consumption of the semaphore — has completed). So there is one render-finished semaphore per swapchain
+// image, indexed by the acquired image index, not by the frame-in-flight slot. The image count can change
+// across swapchain recreation (e.g. FIFO<->MAILBOX on a vsync toggle), so this is rebuilt there too.
+// Reference: https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html
+void VulkanRenderer::createRenderFinishedSemaphores() {
+	m_renderFinishedSemaphores.clear();
+	m_renderFinishedSemaphores.reserve(m_swapChainImages.size());
+
+	vk::SemaphoreCreateInfo semaphoreInfo = {};
+	for (size_t i = 0; i < m_swapChainImages.size(); ++i) {
+		m_renderFinishedSemaphores.emplace_back(m_device->createSemaphoreUnique(semaphoreInfo));
+	}
 }
 
 void VulkanRenderer::createTextureDescriptorSetLayout() {
@@ -1246,7 +1264,8 @@ void VulkanRenderer::render() {
 	m_frameTimelineValues[m_currentFrameIndex] = m_timelineValue;
 	g_frameStats.setTimelineValue(m_timelineValue);
 
-	vk::Semaphore signalSemaphores[] = { *m_renderFinishedSemaphores[m_currentFrameIndex], *m_timelineSemaphore };
+	// Present-wait semaphore is selected by acquired image index so its reuse is gated on that image being re-acquired.
+	vk::Semaphore signalSemaphores[] = { *m_renderFinishedSemaphores[m_currentSwapchainIndex], *m_timelineSemaphore };
 	uint64_t waitValues[] = { 0 };
 	uint64_t signalValues[] = { 0, m_timelineValue };
 
