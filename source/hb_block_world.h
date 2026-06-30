@@ -41,6 +41,7 @@ public:
 
 	void update(
 		float timeSeconds,
+		float deltaTime,
 		uint32_t swapChainWidth,
 		uint32_t swapChainHeight,
 		uint32_t textureWidth,
@@ -58,6 +59,8 @@ private:
 	glm::mat4 tileModelMatrix(uint32_t x, uint32_t z) const;
 
 	float m_degrees = 0.f;
+	float m_targetDegrees = 0.f;
+	glm::vec3 m_translation{ 0.0f };
 	glm::mat4 m_projView{ 1.f };
 	BlockWorldPushConstants m_texturedPush{};
 };

@@ -2,6 +2,7 @@
 
 #include "hb_block_world.h"
 #include "hb_frame_stats_macros.h"
+#include "hb_input.h"
 
 #include <cstddef>
 
@@ -30,6 +31,7 @@ glm::mat4 BlockWorld::tileModelMatrix(uint32_t x, uint32_t z) const {
 
 void BlockWorld::update(
 	float timeSeconds,
+	float deltaTime,
 	uint32_t swapChainWidth,
 	uint32_t swapChainHeight,
 	uint32_t textureWidth,
@@ -39,17 +41,38 @@ void BlockWorld::update(
 	bool flipUvV) {
 	HB_FRAME_STATS_SCOPE("BlockWorld update");
 
-	m_degrees = glm::mod(timeSeconds * 180.0f, 360.0f);
-	const bool flipUvUFromRotation = flipUvUForRotationCycle(m_degrees);
-
+	const float moveStep = deltaTime * 8.0f;
+	if (HBInput::isKey(GLFW_KEY_D)) {
+		m_translation += glm::vec3(-moveStep, 0.0f, 0.0f);
+	}
+	if (HBInput::isKey(GLFW_KEY_A)) {
+		m_translation += glm::vec3(moveStep, 0.0f, 0.0f);
+	}
+	if (HBInput::isKey(GLFW_KEY_W)) {
+		m_translation += glm::vec3(0.0f, -moveStep, 0.0f);
+	}
+	if (HBInput::isKey(GLFW_KEY_S)) {
+		m_translation += glm::vec3(0.0f, moveStep, 0.0f);
+	}
+	if (HBInput::isKeyDown(GLFW_KEY_Q)) {
+		m_targetDegrees += 90.0f;
+	}
+	if (HBInput::isKeyDown(GLFW_KEY_E)) {
+		m_targetDegrees -= 90.0f;
+	}
+	// Frame-rate-independent smoothing toward the target angle.
+	m_degrees = std::lerp(m_degrees, m_targetDegrees, deltaTime * 8.0f);
+	glm::mat4 tr =
+		glm::translate(glm::mat4(1.f), m_translation) *
+		glm::rotate(glm::mat4(1.f), glm::radians(m_degrees), glm::vec3(0.f, 1.f, 0.f));
 	glm::mat4 view = glm::mat4(
 		1.0f, 0.0f, 0.0f, 0.0f,
 		0.0f, 0.5f, 0.0f, 0.0f,
 		0.0f, -0.5f, 1.0f, 0.0f,
 		0.0f, 0.0f, 0.0f, 1.0f
 	);
-	view = view * glm::rotate(glm::mat4(1.f), glm::radians(m_degrees), glm::vec3(0.f, 1.f, 0.f));
-
+	
+	const bool flipUvUFromRotation = flipUvUForRotationCycle(m_degrees);
 	const float winW = static_cast<float>(std::max(1u, swapChainWidth));
 	const float winH = static_cast<float>(std::max(1u, swapChainHeight));
 	const float a_win = winW / winH;
@@ -65,7 +88,7 @@ void BlockWorld::update(
 	glm::mat4 projection = glm::scale(glm::mat4(1.f), glm::vec3(sx, sy, 1.f));
 	projection[2][2] = 1.0f / (zFar - zNear);    // clip.z scale from view-space z
 	projection[3][2] = -zNear / (zFar - zNear);  // clip.z bias
-	m_projView = projection * view;
+	m_projView = projection * view * tr;
 
 	m_texturedPush = {};
 	m_texturedPush.drawMode = DrawModeTextured;

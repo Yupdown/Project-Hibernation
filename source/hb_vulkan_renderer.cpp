@@ -860,6 +860,7 @@ void VulkanRenderer::recordCommandBuffer(vk::CommandBuffer& commandBuffer, uint3
 	const float timeSec = static_cast<float>(glfwGetTime());
 	m_blockWorld.update(
 		timeSec,
+		g_frameStats.currentFrameTime(),
 		m_swapChainExtent.width,
 		m_swapChainExtent.height,
 		m_pixelTexture.width,

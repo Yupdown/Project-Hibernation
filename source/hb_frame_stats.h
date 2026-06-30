@@ -28,6 +28,9 @@ public:
 
 	void setTimelineValue(std::uint64_t value) { m_timelineValue = value; }
 
+	// Duration of the most recent frame, in seconds (updated by newFrame()).
+	float currentFrameTime() const { return m_currentFrameTime; }
+
 	void addSectionMs(const char* sectionName, double ms);
 
 	struct ScopedSection {
